@@ -66,4 +66,34 @@ void main() {
       expect(SystemProxy.decideStaleCleanup(proxyIsOurs: true, engineAlive: false), StaleCleanup.cleaned);
     });
   });
+
+  group('macCleanupServices — уборка по ВСЕМ сервисам (аудит M2)', () {
+    test('полный список системы важнее суженного looksOurs', () {
+      expect(SystemProxy.macCleanupServices(['Wi-Fi', 'Ethernet'], ['Wi-Fi']), ['Wi-Fi', 'Ethernet'],
+          reason: 'снятие только с первого совпадения оставляло протухший прокси на втором сервисе');
+    });
+    test('системный список не прочитался — суженный лучше, чем ничего', () {
+      expect(SystemProxy.macCleanupServices(const [], ['Wi-Fi']), ['Wi-Fi']);
+      expect(SystemProxy.macCleanupServices(const [], const []), isEmpty);
+    });
+  });
+
+  group('parseOwnEnginePidsPosix — добивка сироты строго нашего бинаря (аудит M1)', () {
+    const out = '412 /Applications/bitaps VPN.app/Contents/MacOS/xray run -c stdin:\n'
+        '588 /usr/local/bin/xray\n'
+        '60012 /Applications/bitaps VPN.app/Contents/MacOS/xray\n'
+        'битая строка\n';
+    test('берём только полный путь нашего exeDir', () {
+      expect(
+        SystemProxy.parseOwnEnginePidsPosix(out, '/Applications/bitaps VPN.app/Contents/MacOS'),
+        [412, 60012],
+        reason: 'чужой xray из /usr/local добивать нельзя');
+    });
+    test('хвостовой слэш exeDir не мешает, чужих нет — пусто', () {
+      expect(SystemProxy.parseOwnEnginePidsPosix(out, '/Applications/bitaps VPN.app/Contents/MacOS/'),
+          [412, 60012]);
+      expect(SystemProxy.parseOwnEnginePidsPosix(out, '/opt/other'), isEmpty);
+      expect(SystemProxy.parseOwnEnginePidsPosix('', '/Applications/x'), isEmpty);
+    });
+  });
 }

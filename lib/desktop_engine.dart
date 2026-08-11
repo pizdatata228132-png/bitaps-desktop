@@ -16,6 +16,7 @@ import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Не нашли или не смогли запустить движок — вызывающий показывает текст пользователю.
@@ -27,7 +28,8 @@ class EngineUnavailable implements Exception {
 }
 
 /// Поиск бинаря движка. Порядок: рядом с исполняемым файлом (так его кладёт сборка),
-/// затем каталог данных приложения (куда его можно доложить), затем PATH — для разработки.
+/// затем каталог данных приложения (куда его можно доложить). PATH — ТОЛЬКО в debug:
+/// на проде любой чужой xray из PATH подхватился бы и повёл трафик (аудит, LOW).
 class XrayBinary {
   static const String _name = 'xray';
 
@@ -44,12 +46,15 @@ class XrayBinary {
     for (final c in candidates) {
       if (File(c).existsSync()) return c;
     }
-    // PATH — только запасной путь (dev-машина, установленный вручную xray)
-    final path = Platform.environment['PATH'] ?? '';
-    for (final dir in path.split(Platform.isWindows ? ';' : ':')) {
-      if (dir.isEmpty) continue;
-      final c = '$dir${Platform.pathSeparator}$_name$suffix';
-      if (File(c).existsSync()) return c;
+    // PATH — запасной путь для разработки (dev-машина, установленный вручную xray);
+    // в release ветка мертва (kDebugMode == false) и выкидывается компилятором.
+    if (kDebugMode) {
+      final path = Platform.environment['PATH'] ?? '';
+      for (final dir in path.split(Platform.isWindows ? ';' : ':')) {
+        if (dir.isEmpty) continue;
+        final c = '$dir${Platform.pathSeparator}$_name$suffix';
+        if (File(c).existsSync()) return c;
+      }
     }
     return null;
   }
@@ -339,7 +344,10 @@ class SystemProxy {
         return;
       }
       if (Platform.isMacOS) {
-        final services = _macServices.isNotEmpty ? _macServices : await _macNetworkServices();
+        // Уборка — ВСЕГДА по полному списку сервисов: looksOurs() сужает _macServices до
+        // первого совпадения, и снятие только с него оставляло бы протухший прокси на втором
+        // сервисе (Ethernet vs Wi-Fi) — «нет интернета» при рабочем кабеле (аудит, HIGH).
+        final services = macCleanupServices(await _macNetworkServices(), _macServices);
         await _macRun([
           for (final s in services) ...[
             ['-setsocksfirewallproxystate', s, 'off'],
@@ -497,7 +505,10 @@ class SystemProxy {
     for (final svc in _macServices) {
       final r = await Process.run('/usr/sbin/networksetup', ['-getsocksfirewallproxy', svc]);
       final out = (r.stdout ?? '').toString();
-      if (!(out.contains('Enabled: Yes') && out.contains('$socksPort'))) return false;
+      // Порт — строгим совпадением поля, а не подстрокой: «4000» находилось бы и в «14000»
+      // (аудит, MED) → ложный «прокси применён» при чужом прокси на другом порту.
+      final port = RegExp(r'Port:\s*(\d+)').firstMatch(out)?.group(1) ?? '';
+      if (!(out.contains('Enabled: Yes') && port == '$socksPort')) return false;
     }
     return true;
   }
@@ -660,6 +671,12 @@ class SystemProxy {
     return (engineAlive && !instanceLockHeld) ? StaleCleanup.keptAlive : StaleCleanup.cleaned;
   }
 
+  /// Сервисы macOS, с которых снимаем прокси при уборке: полный список системы, а суженный
+  /// looksOurs — только если системный список не прочитался (не остаться без уборки вовсе).
+  /// Чистая функция — покрыта proxy_guard_test.
+  static List<String> macCleanupServices(List<String> allServices, List<String> narrowed) =>
+      allServices.isNotEmpty ? allServices : narrowed;
+
   /// Порты 127.0.0.1 из строки ProxyServer вида «http=127.0.0.1:40000;…;socks=127.0.0.1:40002».
   /// Чистая функция — покрыта stale_cleanup_test.
   static Set<int> winProxyServerPorts(String server) {
@@ -759,24 +776,59 @@ class SystemProxy {
     } catch (_) {/* best-effort откат — старт/отмену не блокируем */}
   }
 
-  /// Добить осиротевший xray.exe НАШЕЙ установки: родитель умер (краш/диспетчер задач),
-  /// процесс остался — держит порты и грузит CPU. Только Windows и только полный путь нашего
-  /// бинаря (см. parseOwnEnginePids). wmic в новых Windows 11 может отсутствовать, поэтому
-  /// PowerShell + CIM; на macOS/Linux сироту добивает ОС по deathwatch сокета/PPID — трогать
-  /// там посторонние процессы из приложения не будем.
+  /// Добить осиротевший xray НАШЕЙ установки: родитель умер (краш/диспетчер задач/сон),
+  /// процесс остался — держит порты и грузит CPU. Только полный путь нашего бинаря
+  /// (parseOwnEnginePids на Windows, parseOwnEnginePidsPosix на macOS): чужой xray
+  /// (Happ и т.п.) добивать нельзя. Linux оставляем ОС (PPID-deathwatch), там посторонние
+  /// процессы из приложения не трогаем.
   static Future<void> _killOrphanedEngine() async {
-    if (!Platform.isWindows) return;
     try {
-      final exeDir = File(Platform.resolvedExecutable).parent.path;
-      final r = await Process.run('powershell.exe', [
-        '-NoProfile', '-WindowStyle', 'Hidden', '-Command',
-        "Get-CimInstance Win32_Process -Filter \"Name='xray.exe'\" "
-        '| Select-Object ProcessId,ExecutablePath | ConvertTo-Csv -NoTypeInformation',
-      ]);
-      for (final pid in parseOwnEnginePids((r.stdout ?? '').toString(), exeDir)) {
-        await Process.run('taskkill', ['/PID', '$pid', '/F']);
+      if (Platform.isWindows) {
+        final exeDir = File(Platform.resolvedExecutable).parent.path;
+        // wmic в новых Windows 11 может отсутствовать, поэтому PowerShell + CIM.
+        final r = await Process.run('powershell.exe', [
+          '-NoProfile', '-WindowStyle', 'Hidden', '-Command',
+          "Get-CimInstance Win32_Process -Filter \"Name='xray.exe'\" "
+          '| Select-Object ProcessId,ExecutablePath | ConvertTo-Csv -NoTypeInformation',
+        ]);
+        for (final pid in parseOwnEnginePids((r.stdout ?? '').toString(), exeDir)) {
+          await Process.run('taskkill', ['/PID', '$pid', '/F']);
+        }
+        return;
+      }
+      if (Platform.isMacOS) {
+        // deathwatch по PPID на macOS наш процесс не добивает: launchd усыновляет сироту, и
+        // она живёт с занятыми портами (аудит, HIGH). Ищем по полному пути нашего бинаря.
+        final exeDir = File(Platform.resolvedExecutable).parent.path;
+        final r = await Process.run('pgrep', ['-fl', 'xray']);
+        for (final pid in parseOwnEnginePidsPosix((r.stdout ?? '').toString(), exeDir)) {
+          await Process.run('kill', ['-9', '$pid']);
+        }
+        return;
       }
     } catch (_) {/* уборка best-effort: не получилось — старт не блокируем */}
+  }
+
+  /// PID'ы xray ИЗ НАШЕЙ ПАПКИ по выводу `pgrep -fl xray` (macOS): строки «PID cmd…».
+  /// Совпадение — полный путь к нашему бинарю (<exeDir>/xray): чужой xray, запущенный
+  /// из другого места, добивать нельзя. Путь бандла может содержать пробелы («bitaps
+  /// VPN.app»), поэтому не режем по пробелу: совпадение = точный путь ИЛИ путь + аргументы.
+  /// Чистая функция — покрыта proxy_guard_test.
+  static List<int> parseOwnEnginePidsPosix(String out, String exeDir) {
+    final dir = exeDir.replaceAll(RegExp(r'/+$'), '');
+    final want = '$dir/xray';
+    final pids = <int>[];
+    for (final raw in const LineSplitter().convert(out)) {
+      final line = raw.trim();
+      if (line.isEmpty) continue;
+      final sp = line.indexOf(' ');
+      if (sp == -1) continue;
+      final pid = int.tryParse(line.substring(0, sp));
+      if (pid == null) continue;
+      final cmd = line.substring(sp + 1).trim();
+      if (cmd == want || cmd.startsWith('$want ')) pids.add(pid);
+    }
+    return pids;
   }
 
   /// Уведомить систему о смене прокси (аудит п.5): reg.exe НЕ рассылает broadcast, поэтому
