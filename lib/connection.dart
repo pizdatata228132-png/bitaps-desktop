@@ -108,6 +108,18 @@ class ConnectionController extends ChangeNotifier {
   /// Идёт ли серия автопереподключения: ждём таймер (ожидание паузы). Во время самой попытки
   /// (conn == 1) признак серии — reconnectAttempt > 0.
   bool get reconnecting => _reconnectTimer != null;
+  // ── watchdog: фоновая проверка, что ПОДНЯТЫЙ туннель жив ──
+  // Событие обрыва приходит не всегда: сессию может рвать фильтрация молча (иконка VPN есть,
+  // интернета нет, приложение пишет «Подключено»). Пока conn == 2, раз в 30с тянем лёгкий
+  // gen204 сквозь туннель; три подряд неудачи — туннель мёртв, идём тем же путём, что и
+  // обрыв (_dropped): fail-state + серия автореконнекта по тумблеру.
+  Timer? _watchdog;
+  int _watchdogFails = 0;
+  bool _watchdogBusy = false; // verify до ~12с при тике 30с — гвард от наложения
+  static const Duration kWatchdogInterval = Duration(seconds: 30);
+  /// Подряд неудачных проверок до объявления туннеля мёртвым (каждая — уже два gen204-раунда
+  /// внутри verifyConnected, то есть ~90с подтверждённой тишины — ложных разрывов не будет).
+  static const int kWatchdogMaxFails = 3;
   // ── автоперебор кандидатов (режим «лучший сервер»): кто сейчас на пробе ──
   /// Сколько кандидатов перебираем максимум за одно нажатие «Подключиться».
   static const int kMaxTryAttempts = 5;
@@ -401,14 +413,56 @@ class ConnectionController extends ChangeNotifier {
     failMsg = null; failFix = ConnFix.none; // получилось — причина прошлой неудачи неактуальна
     blocked = false; // подключились — блокировки килл-свитча больше нет
     _sessMB = 0; _trafWarned = false;
+    _startWatchdog(); // боевой режим: фоновая проверка «туннель правда жив» (см. выше)
     notifyListeners();
     onPersist();
   }
 
-  // сброс наблюдателей туннеля (таймер секунд + поток статистики движка)
+  // ── watchdog ──
+
+  /// Подряд неудачных проверок, при которых живущий «Подключено» туннель объявляется
+  /// мёртвым. Чистая функция — покрыта watchdog_test.
+  static bool watchdogDrops(int consecutiveFails) => consecutiveFails >= kWatchdogMaxFails;
+
+  void _startWatchdog() {
+    _stopWatchdog();
+    if (!gEngineReal) return; // демо-сессия: проверять нечего, verify гонять по воздуху не будем
+    _watchdog = Timer.periodic(kWatchdogInterval, (_) => _watchdogTick());
+  }
+
+  void _stopWatchdog() {
+    _watchdog?.cancel();
+    _watchdog = null;
+    _watchdogFails = 0;
+    _watchdogBusy = false;
+  }
+
+  Future<void> _watchdogTick() async {
+    if (_disposed || conn != 2 || _watchdogBusy) return;
+    _watchdogBusy = true;
+    final gen = _gen;
+    try {
+      final ok = await TunnelEngine.instance.verifyConnected();
+      if (_disposed || gen != _gen || conn != 2) return; // за проверку всё сменилось
+      if (ok) {
+        _watchdogFails = 0;
+        return;
+      }
+      _watchdogFails++;
+      if (!watchdogDrops(_watchdogFails)) return; // единичный сбой сети — не разрыв
+      // Туннель мёртв, хотя события от движка не было. Тот же путь, что и обрыв: честный
+      // fail-state + серия автореконнекта (тумблер уважаем) — килл-свитч здесь ни при чём.
+      _dropped(gen, why: tr('Соединение потеряно'));
+    } finally {
+      _watchdogBusy = false;
+    }
+  }
+
+  // сброс наблюдателей туннеля (таймер секунд + поток статистики движка + watchdog)
   void _stopWatch() {
     _timer?.cancel(); _timer = null;
     _tunEvents?.cancel(); _tunEvents = null;
+    _stopWatchdog(); // вне сессии фоновой проверки нет: ручной disconnect/выход её гасят
   }
 
   // ── авто-реконнект ──

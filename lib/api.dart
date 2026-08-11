@@ -610,14 +610,15 @@ extension ShellApi on ShellState {
       // Проверка тяжелее TCP-коннекта. На десктопе сначала БЫСТРЫЙ путь: весь флот одним
       // временным процессом движка — обсерватория отдаёт alive/rtt каждого узла за ~4 с
       // (probeFleet), тогда как старый путь поднимал процесс xray на КАЖДЫЙ узел и шёл
-      // 10–12 с. Упал или не покрыл всех — остаток добиваем прежним per-node перебором
-      // пулом с ограничением одновременности (runPooled): на десктопе 6 параллельных
-      // процессов xray — ок, больше — нет; на Android временный экземпляр поднимает
-      // системная часть — по одному.
-      final lanes = Platform.isAndroid ? 1 : 6;
+      // 10–12 с. Работает и при поднятом туннеле: временный процесс идёт к узлам напрямую
+      // (его сокеты в системный прокси не попадают), поэтому «отключитесь для замера» не
+      // нужно НИГДЕ. Упал или не покрыл всех — остаток добиваем per-node перебором пулом
+      // (runPooled): одновременность — pingLanes (на Android временные экземпляры живут на
+      // разных socks-портах по полосе — см. probe(lane)).
+      final lanes = TunnelEngine.pingLanes(Platform.isAndroid);
       rebuild(() { pingTotal = targets.length; pingDone = 0; });
       var rest = targets;
-      if (!viaTunnel && TunnelEngine.kind() == EngineKind.desktopXray) {
+      if (TunnelEngine.kind() == EngineKind.desktopXray) {
         final fleet = await TunnelEngine.instance.probeFleet(targets);
         if (fleet != null) {
           rest = [for (final n in targets) if (!fleet.containsKey(n.tag)) n];
@@ -628,9 +629,10 @@ extension ShellApi on ShellState {
         if (!mounted) return;
       }
       await runPooled<void>([
-        for (final n in rest)
+        for (var i = 0; i < rest.length; i++)
           () async {
-            var ms = await TunnelEngine.instance.probe(n);
+            final n = rest[i];
+            var ms = await TunnelEngine.instance.probe(n, lane: i % lanes);
             // Сквозной замер молчит — фолбэк на живой пинг observatory поднятого туннеля.
             if (ms == null && viaTunnel) ms = _observatoryPing(n.tag);
             applyOne(n, ms);

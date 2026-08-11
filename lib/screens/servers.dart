@@ -7,10 +7,11 @@ extension ShellServers on ShellState {
     // считаем реально доступные серверы и их локации (города). Зарубежные (available:false) не в счёт.
     final avail = fleet.where((s) => s.available).toList();
     final locations = avail.map((s) => s.city).toSet().length;
-    // Пока туннель поднят/поднимается (conn!=0), выбор сервера отбивается тостом. Список при этом
-    // выглядит кликабельным → показываем тонкий inline-хинт и приглушаем некликабельные-сейчас строки
-    // (текущий сервер остаётся читаемым). Логику/тосты не трогаем — только визуальная подсказка.
-    final locked = conn != 0;
+    // Пока туннель поднимается (conn==1) или идёт горячая смена, выбор сервера закрыт —
+    // показываем тонкий inline-хинт и приглушаем некликабельные-сейчас строки (текущий сервер
+    // остаётся читаемым). При ЖИВОМ туннеле на десктопе смена идёт без разрыва (hot-switch) —
+    // строки кликабельны, подсказываем это явно.
+    final locked = conn == 1 || hotSwitching;
     return RefreshIndicator(
       color: C.accent,
       backgroundColor: C.bg2,
@@ -83,9 +84,22 @@ extension ShellServers on ShellState {
           if (locked) ...[
             const SizedBox(height: 16),
             Row(children: [
-              Icon(Icons.lock_outline, size: 14, color: C.muted),
+              Icon(hotSwitching ? Icons.swap_calls : Icons.lock_outline, size: 14, color: C.muted),
               const SizedBox(width: 6),
-              Flexible(child: Text(tr('Отключись, чтобы сменить сервер'), style: mono(12))),
+              Flexible(child: Text(
+                hotSwitching
+                    ? (appLang == 'en'
+                        ? 'Switching to ${tr(hotSwitchTarget)}…'
+                        : 'Переключаюсь на ${tr(hotSwitchTarget)}…')
+                    : tr('Отключись, чтобы сменить сервер'),
+                style: mono(12))),
+            ]),
+          ] else if (conn == 2 && TunnelEngine.kind() == EngineKind.desktopXray) ...[
+            const SizedBox(height: 16),
+            Row(children: [
+              Icon(Icons.swap_calls, size: 14, color: C.muted),
+              const SizedBox(width: 6),
+              Flexible(child: Text(tr('нажми на сервер — переключусь без разрыва'), style: mono(12))),
             ]),
           ],
           const SizedBox(height: 22),

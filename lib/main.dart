@@ -330,6 +330,10 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
   /// VPN отвалился при включённом килл-свитче — трафик заблокирован (fail-closed):
   /// на Главной показываем карточку блокировки вместо «Отключено», см. home.dart.
   bool get connBlocked => _conn.blocked;
+  /// Идёт горячая смена сервера без разрыва VPN (десктоп, hotSwitch): на время переключения
+  /// список серверов показывает «переключаюсь на …», повторные тапы игнорируются.
+  bool hotSwitching = false;
+  String hotSwitchTarget = '';
   void toggle() {
     // Режим «лучший сервер»: перед стартом коннекта сами берём оптимальный для текущего режима
     // сервер (для «Авто»/«Игры» это минимальный пинг — с учётом живых замеров pingOf). Только при
@@ -860,7 +864,7 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
     _loadNodes(); // узлы подписки для экрана «Серверы» — до первого подключения
     // Авто-коннект НЕ должен подниматься сквозь блокировку или без логина: если экран заблокирован
     // (_locked) — стартуем после разблокировки (см. _tryUnlock), иначе пробуем сразу.
-    if (!_locked) _maybeAutoConnect();
+    if (!_locked) { _maybeAutoConnect(); _recoverOrphanedConnection(); }
   }
 
   // Поднять авто-коннект, только если он включён, туннель выключен, экран разблокирован и есть логин.
@@ -869,6 +873,24 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
     Future.delayed(const Duration(milliseconds: 500), () {
       if (mounted && autoConnect && conn == 0 && !_locked && loggedIn) toggle();
     });
+  }
+
+  /// Старт с НАШИМ прокси в системе, но без живой сессии: прошлая сессия умерла некрасиво
+  /// (краш/перезагрузка/отмена пароля на уборке) — иконка «VPN» горит, а приложение писало бы
+  /// «не подключено». Вместо этого честно показываем «соединение потеряно — переподключаюсь»
+  /// и запускаем подключение сами. Обычный запуск (прокси нет) — ничего не делаем.
+  /// Только десктоп: там наш след в системе — системный прокси (SystemProxy.looksOurs).
+  Future<void> _recoverOrphanedConnection() async {
+    if (!kRealTunnel || TunnelEngine.kind() != EngineKind.desktopXray) return;
+    if (_locked || conn != 0) return;
+    try {
+      if (!await SystemProxy.looksOurs()) return;
+    } catch (_) {
+      return;
+    }
+    if (!mounted || conn != 0 || _locked) return;
+    _toast(tr('Соединение потеряно — переподключаюсь…'));
+    toggle(); // обычный путь подключения: выбор лучшей ноды, verify, автоперебор
   }
 
   // тема: 0 тёмная · 1 светлая · 2 системная (следует за настройкой ОС).
@@ -1211,9 +1233,17 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
   }
 
   void _pickServer(Server s) {
-    // Запрещаем смену и при conn==1 (идёт подключение): конфиг коннекта уже собран со старым
+    // Запрещаем смену при conn==1 (идёт подключение): конфиг коннекта уже собран со старым
     // сервером — иначе UI показал бы один сервер, а туннель поднимался бы на другой (рассинхрон).
     if (conn != 0) {
+      // Горячая смена БЕЗ разрыва (десктоп, живой туннель): движок поднимается на новом узле
+      // параллельно, системный прокси переписывается атомарно после verify — окна голого
+      // трафика нет. Провал — остаёмся на прежнем сервере, туннель не дёргался.
+      if (conn == 2 && TunnelEngine.kind() == EngineKind.desktopXray &&
+          s.available && s.id != server.id && !hotSwitching) {
+        _hotSwitch(s);
+        return;
+      }
       _toast(tr('Отключись, чтобы сменить сервер'));
       return;
     }
@@ -1226,6 +1256,28 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
     setState(() { server = s; bestServer = false; });
     _save();
     _toast(appLang == 'en' ? 'Server: ${tr(s.city)}' : 'Сервер: ${tr(s.city)}');
+  }
+
+  /// Горячая смена сервера на живом подключении (десктоп). Прокси не дёргается до подтверждения
+  /// нового узла — см. TunnelEngine.hotSwitch; неудача → остаёмся на прежнем (он не прерывался).
+  Future<void> _hotSwitch(Server s) async {
+    if (hotSwitching) return;
+    final prev = server;
+    rebuild(() { hotSwitching = true; hotSwitchTarget = s.city; });
+    final ok = await TunnelEngine.instance.hotSwitch(subNodes, s.id);
+    if (!mounted) return;
+    rebuild(() {
+      hotSwitching = false; hotSwitchTarget = '';
+      if (ok) { server = s; bestServer = false; }
+    });
+    if (ok) {
+      _save(); // ручной выбор персистим, как при обычной смене (serverId)
+      _toast(appLang == 'en' ? 'Switched to ${tr(s.city)}' : 'Переключено: ${tr(s.city)}');
+    } else {
+      _toast(appLang == 'en'
+          ? "Couldn't switch to ${tr(s.city)} — stayed on ${tr(prev.city)}"
+          : 'Не удалось переключиться на ${tr(s.city)} — остался на ${tr(prev.city)}');
+    }
   }
 
   @override

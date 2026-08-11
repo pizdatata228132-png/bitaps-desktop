@@ -425,6 +425,78 @@ class TunnelEngine {
     }
   }
 
+  /// Два gen204 через КОНКРЕТНЫЙ локальный HTTP-вход параллельно (кандидат hot-switch).
+  Future<bool> _verifyViaHttpPort(int httpPort) async {
+    final results = await Future.wait([
+      for (final url in probeUrls) _verifyUrl(url, httpPortOverride: httpPort),
+    ]);
+    return results.any((ok) => ok);
+  }
+
+  // ── HOT-SWITCH: смена узла БЕЗ разрыва VPN (десктоп) ──
+  //
+  // Плавный переход вместо disconnect→connect: поднимаем ВТОРОЙ процесс движка на НОВЫХ
+  // свободных портах с узлом [onlyTag], проверяем его сквозным gen204 (старый туннель в это
+  // время работает), и только потом атомарно переписываем системный прокси на новые порты и
+  // гасим старый процесс. Окна голого трафика нет вовсе; при провале кандидата старый
+  // туннель даже не дёргался — вызывающий остаётся на прежнем сервере (false).
+
+  /// Решение hot-switch: переносить ли системный прокси на порты кандидата. Только если
+  /// кандидат подтверждён verify И поколение подключения не сменилось за прогон (отмена/
+  /// обрыв/новый connect снаружи). Чистая функция — покрыта hot_switch_test.
+  static bool hotSwitchCommits({required bool verified, required int epochBefore, required int epochNow}) =>
+      verified && epochBefore == epochNow;
+
+  /// Плавная смена узла на [onlyTag]. true — переключились; false — остались на прежнем
+  /// (кандидат не поднялся/не пропустил трафик/сменилось поколение/не тот движок).
+  Future<bool> hotSwitch(List<SubNode> nodes, String onlyTag) async {
+    if (kind() != EngineKind.desktopXray || _proc == null) return false;
+    final usable = usableNodes(nodes);
+    if (!usable.any((n) => n.tag == onlyTag)) return false;
+    final bin = XrayBinary.locate();
+    if (bin == null) return false;
+    final epoch = _connectEpoch;
+    // Новые свободные порты: старый туннель живёт на своих до самого переключения.
+    final socksPort = await _freePort();
+    final httpPort = await _freePort();
+    final metricsPort = await _freePort();
+    final cfg = xrayConfigJsonFromNodes(usable,
+        only: onlyTag, socksPort: socksPort, httpPort: httpPort, metricsPort: metricsPort);
+    XrayProcess? proc;
+    try {
+      proc = await XrayProcess.start(cfg, socksPort: socksPort, binaryPath: bin);
+    } catch (_) {
+      return false;
+    }
+    final verified = await _verifyViaHttpPort(httpPort);
+    if (!hotSwitchCommits(verified: verified, epochBefore: epoch, epochNow: _connectEpoch)) {
+      await proc.stop();
+      return false;
+    }
+    // Переписываем системный прокси на новые порты АТОМАРНО. Снимок настроек при этом не
+    // затирается: текущий прокси — наш (см. snapshotNeeded в desktop_engine.dart).
+    final proxyOk = await SystemProxy.enable(socksPort: socksPort, httpPort: httpPort);
+    if (!proxyOk) {
+      await proc.stop();
+      return false; // старый туннель и старый прокси на месте
+    }
+    if (epoch != _connectEpoch) {
+      // Поколение сменилось за переключение (disconnect снаружи): прокси уже переписан на
+      // наши порты — откатываем, старый туннель в любом случае гаснет внешним кодом.
+      await proc.stop();
+      await SystemProxy.disableIfPorts({socksPort, httpPort});
+      return false;
+    }
+    // Коммит: новый процесс — активный, старый гасим (своя остановка, onDied не сработает).
+    final old = _proc;
+    _proc = proc;
+    _metricsPort = metricsPort;
+    _activeHttpPort = httpPort;
+    _lastTotals = null; // счётчики нового процесса — с нуля, скорость честно просядет на секунду
+    if (old != null) await old.stop();
+    return true;
+  }
+
   // ── ПРОВЕРКА УЗЛА: пропускает ли он трафик С ЭТОГО УСТРОЙСТВА ──
   //
   // Смысл: поднять временный экземпляр движка ровно на один узел и вытянуть сквозь него
@@ -443,17 +515,27 @@ class TunnelEngine {
   // секунды — уже «не работает». При параллельном замере (6 одновременно) флот из ~13 узлов
   // укладывается в ~10–12 с общего времени.
   static const Duration probeTimeout = Duration(seconds: 4);
+
+  /// Одновременность замера флота (lanes для runPooled в _pingServers). На десктопе 6 —
+  //  шесть процессов xray ок. На Android 2, а не 4: все пробы плагина делят синглтон
+  //  V2rayCoreManager с ЖИВЫМ VpnService (нативный сбой убил бы текущее подключение), а
+  //  потокобезопасность go-lib measureOutboundDelay по коду плагина не гарантирована
+  //  (executor там cachedThreadPool, но это лишь исполнитель). Чистая функция — ping_pool_test.
+  static int pingLanes(bool isAndroid) => isAndroid ? 2 : 6;
   // Бюджет одного круга проверки «трафик реально идёт» при подключении (два адреса делят его).
   // Щедрее probeTimeout: отрицательный ответ здесь гонит перебор на следующий сервер.
   static const Duration verifyTimeout = Duration(seconds: 6);
 
   /// Время ответа сквозь узел в мс, либо null — трафик не пошёл. Никогда не бросает:
   /// непригодный узел это результат проверки, а не сбой приложения.
-  Future<int?> probe(SubNode node) async {
+  /// [lane] — номер полосы параллельного замера: на Android каждая полоса получает СВОЙ
+  /// socks-порт временного экземпляра (kXrayProbeSocksPort + lane), иначе два параллельных
+  /// probe дрались бы за один порт и один из них молча умирал.
+  Future<int?> probe(SubNode node, {int lane = 0}) async {
     try {
       switch (kind()) {
         case EngineKind.androidXray:
-          return await _probeAndroid(node);
+          return await _probeAndroid(node, lane);
         case EngineKind.desktopXray:
           return await _probeDesktop(node);
         case EngineKind.native:
@@ -492,7 +574,9 @@ class TunnelEngine {
   }
 
   /// Один gen204 сквозь туннель в бюджете verifyTimeout. Никогда не бросает.
-  Future<bool> _verifyUrl(String url) async {
+  /// [httpPortOverride] — проверить ЧЕРЕЗ конкретный локальный HTTP-вход (кандидат
+  /// hot-switch: он ещё не активен, и _activeHttpPort указывает на прежний туннель).
+  Future<bool> _verifyUrl(String url, {int? httpPortOverride}) async {
     try {
       if (kind() == EngineKind.androidXray) {
         final ms = await _android.connectedDelay(url).timeout(verifyTimeout);
@@ -502,7 +586,7 @@ class TunnelEngine {
       // прямой запрос измерял бы НАШУ сеть, а не туннель. Идём через локальный HTTP-вход
       // поднятого движка. Порта нет (движок не наш/не поднялся) — напрямую НЕ идём: ложный
       // «трафик идёт» при мёртвом туннеле хуже честного «не прошло» (багхант, LOW).
-      final httpPort = kind() == EngineKind.desktopXray ? _activeHttpPort : null;
+      final httpPort = kind() == EngineKind.desktopXray ? (httpPortOverride ?? _activeHttpPort) : null;
       if (kind() == EngineKind.desktopXray && httpPort == null) return false;
       final client = HttpClient()..connectionTimeout = verifyTimeout;
       if (httpPort != null) client.findProxy = (_) => 'PROXY 127.0.0.1:$httpPort';
@@ -519,8 +603,10 @@ class TunnelEngine {
     }
   }
 
-  Future<int?> _probeAndroid(SubNode node) async {
-    final cfg = xrayEntryConfigJson(node, socksPort: kXrayProbeSocksPort);
+  Future<int?> _probeAndroid(SubNode node, int lane) async {
+    // Свой socks-порт на полосу замера: параллельные probe (lanes=2, см. pingLanes) с одним
+    // портом молча мешали бы друг другу.
+    final cfg = xrayEntryConfigJson(node, socksPort: kXrayProbeSocksPort + lane);
     // Один круг в общем бюджете probeTimeout: раньше было два (рабочий узел при холодном старте
     // не укладывался в таймаут), но параллельный замер флота не может себе это позволить —
     // приговор ставится по одному подтверждённому отказу, сомнительный узел перепроверяется

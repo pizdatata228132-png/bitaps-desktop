@@ -56,6 +56,7 @@ extension ShellLock on ShellState {
       _syncAnimations(); // разблокировали → поднимаем анимации, погашенные на замке
       _pinCtrl.clear();
       _maybeAutoConnect(); // отложенный авто-коннект стартует только после разблокировки
+      _recoverOrphanedConnection(); // и восстановление умершей прошлой сессии (наш прокси без движка)
       _processPendingDeepLink(); // и deep-link, пришедший под замком
     } else {
       _pinFails++;
