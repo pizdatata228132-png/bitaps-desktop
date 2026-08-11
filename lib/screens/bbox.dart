@@ -183,7 +183,7 @@ class _BBoxScreenState extends State<_BBoxScreen> {
               Row(children: [_gIcon(Icons.inventory_2_outlined), const SizedBox(width: 12), _kicker(tr('что внутри'))]),
               const SizedBox(height: 12),
               _bullet(Icons.wifi, tr('Точка доступа'), tr('Раздаёт свой Wi-Fi: подключился — уже под защитой')),
-              _bullet(Icons.dns_outlined, tr('Наш туннель внутри'), tr('Те же узлы, что и в приложении, с обходом блокировок')),
+              _bullet(Icons.dns_outlined, tr('Наш туннель внутри'), tr('Те же узлы, что и в приложении — стабильные в любых сетях')),
               _bullet(Icons.devices_other, tr('Сколько угодно устройств'), tr('Телевизор, приставка, колонка — лимит подписки не тратится')),
               _bullet(Icons.power_settings_new, tr('Включил и забыл'), tr('Обновляется сама, настройка — один раз с телефона')),
             ])),

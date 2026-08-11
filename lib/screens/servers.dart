@@ -224,7 +224,7 @@ extension ShellServers on ShellState {
       ],
       if (bs.isNotEmpty) ...[
         const SizedBox(height: 22),
-        _kicker(tr('анти-глушилка · CDN')),
+        _kicker(tr('устойчивый · CDN')),
         const SizedBox(height: 10),
         for (final s in bs) _serverRow(s, locked),
       ],

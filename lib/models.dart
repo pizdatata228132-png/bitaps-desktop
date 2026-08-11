@@ -182,7 +182,7 @@ Server serverFromSubNode(SubNode n, {int ping = 0}) {
   final flag = parts.isNotEmpty ? parts.first : '🌐';
   var city = parts.length > 1 ? parts.sublist(1).join(' ') : n.remark;
   // Хвост рельсы («· LTE», «· БС», «· CDN») из названия убираем: он и так виден по заголовку
-  // группы («анти-глушилка · CDN»), а склеенный с названием мешал переводу — «Румыния · LTE»
+  // группы («устойчивый · CDN»), а склеенный с названием мешал переводу — «Румыния · LTE»
   // в словаре стран не находится, и в английском интерфейсе строка оставалась русской.
   city = city.replaceFirst(RegExp(r'\s*·\s*(LTE|БС|CDN)\s*$', caseSensitive: false), '');
   return Server(

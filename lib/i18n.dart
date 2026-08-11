@@ -197,7 +197,7 @@ const Map<String, String> _kEn = {
   '🇷🇺 Россия': '🇷🇺 Russia',
   '🌍 зарубежные · скоро': '🌍 international · soon',
   'прямые серверы': 'direct servers',
-  'анти-глушилка · CDN': 'anti-jammer · CDN',
+  'устойчивый · CDN': 'resilient · CDN',
   'Войди в аккаунт — здесь появятся твои серверы': 'Sign in — your servers will appear here',
   // Названия локаций серверов. Раньше здесь лежала горстка строк из выдуманного списка
   // (Москва/СПб/Екатеринбург), а реальные узлы приходят из подписки — и в английском интерфейсе
@@ -250,7 +250,7 @@ const Map<String, String> _kEn = {
   'Точка доступа': 'Access point',
   'Раздаёт свой Wi-Fi: подключился — уже под защитой': 'It runs its own Wi-Fi: connect and you are already protected',
   'Наш туннель внутри': 'Our tunnel inside',
-  'Те же узлы, что и в приложении, с обходом блокировок': 'The same nodes as in the app, with blocking bypass',
+  'Те же узлы, что и в приложении — стабильные в любых сетях': 'The same nodes as in the app — stable on any network',
   'Сколько угодно устройств': 'As many devices as you like',
   'Телевизор, приставка, колонка — лимит подписки не тратится': 'TV, console, speaker — your subscription limit is not spent',
   'Включил и забыл': 'Plug it in and forget it',
