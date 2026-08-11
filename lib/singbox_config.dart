@@ -11,7 +11,6 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
 /// Схемы share-link, которые умеет разобрать [outboundFromKey] — единый источник
 /// правды для гарда подключения (connection.dart), чтобы он не отставал от парсера.
@@ -769,6 +768,14 @@ Future<SubFetchResult> fetchSubscription(
 /// Ключ prefs с кэшем выдачи.
 const String kSubCachePrefsKey = 'subCache';
 
+/// Хранилище кэша подписки. ВАЖНО: этот файл — чистый Dart (tool/check_config.dart гоняется
+/// обычным `dart run` в CI, где dart:ui недоступен): импорт shared_preferences сюда ронял
+/// гейт сборки (06.08). Реализация на SharedPreferences живёт во Flutter-слое (main.dart).
+abstract class SubCacheStore {
+  Future<String?> read();
+  Future<void> write(String value);
+}
+
 /// Срок жизни кэша: протухший игнорируем, и вызывающий получает честную ошибку, как раньше.
 const Duration kSubCacheTtl = Duration(days: 7);
 
@@ -806,26 +813,20 @@ Future<SubFetchResult> fetchSubscriptionCached(
   String deviceOs = '',
   http.Client? client,
   Duration timeout = const Duration(seconds: 20),
-  SharedPreferences? prefs, // под тесты; null — SharedPreferences.getInstance()
+  SubCacheStore? store, // null — кэш не работает, поведение как у голого fetchSubscription
 }) async {
   final sub =
       await fetchSubscription(url, hwid: hwid, deviceOs: deviceOs, client: client, timeout: timeout);
-  SharedPreferences? p = prefs;
-  try {
-    p ??= await SharedPreferences.getInstance();
-  } catch (_) {
-    p = null; // хранилище недоступно — кэш просто не работает, поведение как раньше
-  }
   if (sub.ok && sub.rawBody != null) {
     try {
-      await p?.setString(kSubCachePrefsKey, subCacheEncode(url, sub.rawBody!, DateTime.now()));
+      await store?.write(subCacheEncode(url, sub.rawBody!, DateTime.now()));
     } catch (_) {/* записать не вышло — не критично */}
     return sub;
   }
   if (sub.error == null) return sub; // ответ сервиса (notice) — не тронуть кэшем
   String? raw;
   try {
-    raw = p?.getString(kSubCachePrefsKey);
+    raw = await store?.read();
   } catch (_) {
     raw = null;
   }

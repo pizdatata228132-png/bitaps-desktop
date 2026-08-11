@@ -704,7 +704,7 @@ extension ShellApi on ShellState {
     final key = keyStr.trim();
     if (!isSubscriptionUrl(key) || hwid.isEmpty) return;
     try {
-      final sub = await fetchSubscriptionCached(key, hwid: hwid, deviceOs: Platform.operatingSystem);
+      final sub = await fetchSubscriptionCached(key, hwid: hwid, deviceOs: Platform.operatingSystem, store: subCacheStore);
       if (!mounted) return;
       // Отметка свежести — только по успешному ответу сервиса ИЗ СЕТИ: открытие «Серверов» гоняет
       // fetch не чаще раза в 5 минут (см. _maybeRefreshNodes), а сбой/кэш не должен его откладывать —

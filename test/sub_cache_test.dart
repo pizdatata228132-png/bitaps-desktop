@@ -10,8 +10,18 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:bitaps_vpn/singbox_config.dart';
+
+// Хранилище-фейк вместо SharedPreferences: контракт SubCacheStore (singbox_config.dart —
+// чистый Dart, CI гоняет его через `dart run`).
+class _FakeStore implements SubCacheStore {
+  final Map<String, String> m;
+  _FakeStore([Map<String, String>? initial]) : m = initial ?? {};
+  @override
+  Future<String?> read() async => m[kSubCachePrefsKey];
+  @override
+  Future<void> write(String v) async { m[kSubCachePrefsKey] = v; }
+}
 
 const _url = 'https://origin.bit-core.online/u/abcdefghij';
 
@@ -83,19 +93,17 @@ void main() {
 
   group('fetchSubscriptionCached — сеть + кэш', () {
     test('успешная выдача пишет кэш и не помечена cachedAt', () async {
-      SharedPreferences.setMockInitialValues({});
-      final p = await SharedPreferences.getInstance();
-      final res = await fetchSubscriptionCached(_url, hwid: 'hwidtest0001', client: _ok(), prefs: p);
+      final p = _FakeStore();
+      final res = await fetchSubscriptionCached(_url, hwid: 'hwidtest0001', client: _ok(), store: p);
       expect(res.ok, isTrue);
       expect(res.cachedAt, isNull, reason: 'свежая выдача — пометки кэша быть не должно');
-      expect(p.getString(kSubCachePrefsKey), isNotNull, reason: 'успех обязан обновить кэш');
+      expect(p.m[kSubCachePrefsKey], isNotNull, reason: 'успех обязан обновить кэш');
     });
 
     test('сбой сети → молча список из кэша с датой cachedAt', () async {
       final at = DateTime.now().subtract(const Duration(hours: 3));
-      SharedPreferences.setMockInitialValues({kSubCachePrefsKey: subCacheEncode(_url, _subBody, at)});
-      final p = await SharedPreferences.getInstance();
-      final res = await fetchSubscriptionCached(_url, hwid: 'hwidtest0001', client: _fail(), prefs: p);
+      final p = _FakeStore({kSubCachePrefsKey: subCacheEncode(_url, _subBody, at)});
+      final res = await fetchSubscriptionCached(_url, hwid: 'hwidtest0001', client: _fail(), store: p);
       expect(res.ok, isTrue, reason: 'кэш обязан дать рабочий список при мёртвой выдаче');
       expect(res.nodes.length, 1);
       expect(res.cachedAt, isNotNull, reason: 'UI должен показать «список из кэша от <дата>»');
@@ -105,29 +113,25 @@ void main() {
 
     test('сбой сети и протухший кэш → честная ошибка, как раньше', () async {
       final at = DateTime.now().subtract(const Duration(days: 9));
-      SharedPreferences.setMockInitialValues({kSubCachePrefsKey: subCacheEncode(_url, _subBody, at)});
-      final p = await SharedPreferences.getInstance();
-      final res = await fetchSubscriptionCached(_url, hwid: 'hwidtest0001', client: _fail(), prefs: p);
+      final p = _FakeStore({kSubCachePrefsKey: subCacheEncode(_url, _subBody, at)});
+      final res = await fetchSubscriptionCached(_url, hwid: 'hwidtest0001', client: _fail(), store: p);
       expect(res.ok, isFalse);
       expect(res.error, isNotNull, reason: 'протухший кэш игнорируем — ошибка как без кэша');
       expect(res.cachedAt, isNull);
     });
 
     test('сбой сети без кэша → ошибка без подмены', () async {
-      SharedPreferences.setMockInitialValues({});
-      final p = await SharedPreferences.getInstance();
-      final res = await fetchSubscriptionCached(_url, hwid: 'hwidtest0001', client: _fail(), prefs: p);
+      final p = _FakeStore();
+      final res = await fetchSubscriptionCached(_url, hwid: 'hwidtest0001', client: _fail(), store: p);
       expect(res.ok, isFalse);
       expect(res.error, isNotNull);
       expect(res.nodes, isEmpty);
     });
 
     test('notice-ответ сервиса кэшем НЕ подменяется', () async {
-      SharedPreferences.setMockInitialValues(
-          {kSubCachePrefsKey: subCacheEncode(_url, _subBody, DateTime.now())});
-      final p = await SharedPreferences.getInstance();
+      final p = _FakeStore({kSubCachePrefsKey: subCacheEncode(_url, _subBody, DateTime.now())});
       final res =
-          await fetchSubscriptionCached(_url, hwid: 'hwidtest0001', client: _ok(_noticeBody), prefs: p);
+          await fetchSubscriptionCached(_url, hwid: 'hwidtest0001', client: _ok(_noticeBody), store: p);
       expect(res.ok, isFalse, reason: 'узлов нет — ok быть не должно');
       expect(res.error, isNull);
       expect(res.notice, contains('Подписка истекла'),

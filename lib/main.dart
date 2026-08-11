@@ -43,6 +43,7 @@ part 'node_probe.dart';  // приговоры по узлам: что реал�
 part 'node_stats.dart';  // публичная статистика доступности нод (спарклайны на «Серверах»)
 part 'screens/home.dart';
 part 'screens/servers.dart';
+
 part 'screens/account.dart';
 part 'screens/settings.dart';
 part 'screens/lock.dart';
@@ -50,6 +51,38 @@ part 'screens/onboarding.dart';
 part 'screens/paywall.dart';
 part 'screens/billing.dart'; // Play Billing: покупка подписки из приложения (Google Play)
 part 'screens/bbox.dart';    // B-box: свой экран товара, предзаказ и «поторопить сборку»
+
+/// SharedPreferences-реализация кэша подписки (сам класс-контракт SubCacheStore — чистый Dart
+/// в singbox_config.dart: CI гоняет tool/check_config.dart обычным `dart run`, где dart:ui
+/// недоступен, и прямой импорт shared_preferences там ронял гейт — 06.08).
+class PrefsSubCacheStore implements SubCacheStore {
+  SharedPreferences? _p;
+  Future<SharedPreferences?> _prefs() async {
+    try {
+      return _p ??= await SharedPreferences.getInstance();
+    } catch (_) {
+      return null; // хранилище недоступно — кэш молча отключён, поведение как у голого fetch
+    }
+  }
+
+  @override
+  Future<String?> read() async {
+    try {
+      return (await _prefs())?.getString(kSubCachePrefsKey);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> write(String v) async {
+    try {
+      await (await _prefs())?.setString(kSubCachePrefsKey, v);
+    } catch (_) {/* записать не вышло — не критично */}
+  }
+}
+
+final PrefsSubCacheStore subCacheStore = PrefsSubCacheStore();
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();

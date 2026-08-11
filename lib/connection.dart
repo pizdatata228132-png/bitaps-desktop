@@ -197,7 +197,7 @@ class ConnectionController extends ChangeNotifier {
         if (isSub) {
           // Кэшированная выдача: под «белыми списками» origin.bit-core.online мёртв — после
           // сбоя сети молча поднимаем список из кэша (TTL 7 дней, см. fetchSubscriptionCached).
-          final sub = await fetchSubscriptionCached(key, hwid: hwidOf(), deviceOs: Platform.operatingSystem);
+          final sub = await fetchSubscriptionCached(key, hwid: hwidOf(), deviceOs: Platform.operatingSystem, store: subCacheStore);
           if (_disposed || gen != _gen) return; // отменили, пока грузилась подписка
           // Сервис отвечает уведомлением вместо узлов: подписка истекла / исчерпан лимит устройств.
           // Показываем его текст как есть — он уже написан для пользователя и локализован сервисом.
