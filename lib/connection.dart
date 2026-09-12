@@ -120,6 +120,12 @@ class ConnectionController extends ChangeNotifier {
   /// Подряд неудачных проверок до объявления туннеля мёртвым (каждая — уже два gen204-раунда
   /// внутри verifyConnected, то есть ~90с подтверждённой тишины — ложных разрывов не будет).
   static const int kWatchdogMaxFails = 3;
+  // ТРАФИК-ГРЕЙС (30.08, владелец: «туннель постоянно скачет»): пока через туннель идут
+  // реальные данные (speed > 0 от движка), HTTP-проба сторожа пропускается. Поток — лучшее
+  // доказательство жизни туннеля; лишняя проверка сквозь него на мобильной сети давала
+  // ложные разрывы → серия автопереподключений → «скачет» и лагает.
+  static const Duration kWatchdogTrafficGrace = Duration(seconds: 20);
+  DateTime? _lastTrafficAt; // когда в последний раз видели speed > 0 от движка
   // ── автоперебор кандидатов (режим «лучший сервер»): кто сейчас на пробе ──
   /// Сколько кандидатов перебираем максимум за одно нажатие «Подключиться».
   static const int kMaxTryAttempts = 5;
@@ -257,6 +263,12 @@ class ConnectionController extends ChangeNotifier {
         if (_disposed || gen != _gen) return; // отменили, пока шёл пре-флайт
         final roam = bestServerOn();
         var candidate = serverOf();
+        // 30.08: приговоры «недоступен» режут кандидатов из выбора — при всех мёртвых
+        // serverForMode уже отдал лучший из ВСЕГО парка (фолбэк в main.dart), но перебору
+        // нужен собственный запасной путь: идём по списку узлов подписки в порядке выдачи,
+        // пропуская уже опробованные. Иначе при свежем сбое сети первый же неудачный узел
+        // заканчивал всю серию («Ни один сервер не ответил») — владелец это поймал.
+        final triedTags = <String>{};
         // Стартовый кандидат выбирался ДО пре-флайта (ShellState.toggle → serverForMode) и
         // мог оказаться прямой нодой — в restricted пересчитываем сразу: первая же попытка
         // должна идти на рельсу, а не тратить ~15 с на заведомо мёртвую прямую.
@@ -339,6 +351,16 @@ class ConnectionController extends ChangeNotifier {
               rescuedDirect = true;
             }
           }
+          // Запасной путь перебора (30.08): выбор мог отрезать ВЕСЬ парк (stale-приговоры) —
+          // тогда идём по сырому списку узлов подписки, пропуская уже опробованные.
+          if (next == null && roam) {
+            if (candidate.id.isNotEmpty) triedTags.add(candidate.id);
+            for (final n in nodes) {
+              if (n.tag.isEmpty || triedTags.contains(n.tag)) continue;
+              next = serverFromSubNode(n, ping: 0);
+              break;
+            }
+          }
           if (next == null) {
             _resetTry();
             _fail(gen,
@@ -368,6 +390,8 @@ class ConnectionController extends ChangeNotifier {
           if (e.state == 'error' || e.state == 'disconnected') { _dropped(gen, why: e.message); return; }
           down = e.downKbps;
           up = e.upKbps;
+          // трафик-грейс сторожа: любая ненулевая скорость = туннель точно жив
+          if (e.downKbps > 0 || e.upKbps > 0) _lastTrafficAt = DateTime.now();
           notifyListeners();
         // ошибка самого канала (смерть процесса движка вместе с EventChannel) не приходит событием
         // state=='error' — ловим её отдельно, иначе UI навсегда завис бы в «Подключено».
@@ -413,12 +437,34 @@ class ConnectionController extends ChangeNotifier {
     failMsg = null; failFix = ConnFix.none; // получилось — причина прошлой неудачи неактуальна
     blocked = false; // подключились — блокировки килл-свитча больше нет
     _sessMB = 0; _trafWarned = false;
+    // старт сессии считаем моментом «трафика»: первые 20 с сторож HTTP не гоняет —
+    // радио/туннелью только что установили, ранняя проба любит лгать.
+    _lastTrafficAt = DateTime.now();
     _startWatchdog(); // боевой режим: фоновая проверка «туннель правда жив» (см. выше)
     notifyListeners();
     onPersist();
   }
 
   // ── watchdog ──
+
+  /// Туннель уже жив (VpnService пережил свайп-убийство процесса), сессии в этом процессе
+  /// нет: НЕ переподключаемся, а усыновляем — интерфейс честно показывает «Подключено»,
+  /// движок продолжает работать как работал (30.08, владелец: возврат в приложение не должен
+  /// дёргать реконнект рабочего VPN). Подписка на события — как у обычной сессии, иначе
+  /// усыновлённый туннель показывал бы 0 kbps и обрыв ловил бы только сторож (аудит 09.09).
+  void adoptRunningTunnel() {
+    if (conn != 0) return;
+    gEngineReal = true;
+    _startSession(down: 0, up: 0);
+    _tunEvents = TunnelEngine.instance.events.listen((e) {
+      if (_disposed) return;
+      if (e.state == 'error' || e.state == 'disconnected') { _dropped(_gen, why: e.message); return; }
+      down = e.downKbps;
+      up = e.upKbps;
+      if (e.downKbps > 0 || e.upKbps > 0) _lastTrafficAt = DateTime.now();
+      notifyListeners();
+    }, onError: (_) => _dropped(_gen));
+  }
 
   /// Подряд неудачных проверок, при которых живущий «Подключено» туннель объявляется
   /// мёртвым. Чистая функция — покрыта watchdog_test.
@@ -439,6 +485,16 @@ class ConnectionController extends ChangeNotifier {
 
   Future<void> _watchdogTick() async {
     if (_disposed || conn != 2 || _watchdogBusy) return;
+    // ТРАФИК-ГРЕЙС (30.08, владелец: «туннель постоянно скачет»): реальный поток данных —
+    // лучшее доказательство, что туннель жив. HTTP-проба сквозь него в момент активного
+    // трафика лишь множит ложные разрывы (особенно на мобильной сети): пока данные идут,
+    // сторож HTTP не гоняет. На Android скорость теперь приходит от самого плагина.
+    final lastTraffic = _lastTrafficAt;
+    if (lastTraffic != null &&
+        DateTime.now().difference(lastTraffic) < kWatchdogTrafficGrace) {
+      _watchdogFails = 0;
+      return;
+    }
     _watchdogBusy = true;
     final gen = _gen;
     try {
@@ -573,11 +629,12 @@ class ConnectionController extends ChangeNotifier {
   }
 
   // Продолжать ли автоперебор после того, как кандидат [attempt] (нумерация с 1) не пропустил
-  // трафик: только в режиме «лучший сервер» и пока не исчерпали kMaxTryAttempts за нажатие.
+  // трафик: только в режиме «лучший сервер». Кап в 5 попыток УБРАН (25.08, владелец):
+  // перебираем ВСЕХ кандидатов подписки — остановка по исчерпанию списка (nextServerOf
+  // возвращает пустой/тот же узел, см. toggle()). Один неработающий сервер не должен решать.
   /// Ручной выбор — всегда стоп (поведение прежнее: причина + подсказка про «лучший сервер»).
   /// Чистая функция — правило покрыто roam_test (перебор без живого движка не воспроизвести).
-  static bool roamContinues(bool bestServer, int attempt) =>
-      bestServer && attempt < kMaxTryAttempts;
+  static bool roamContinues(bool bestServer, int attempt) => bestServer;
 
   /// Разрешён ли автоподхват CDN-рельсы после провала кандидата: только РУЧНОЙ выбор (в режиме
   /// «лучший сервер» перебор и так идёт через roamContinues), только restricted-сеть (см.

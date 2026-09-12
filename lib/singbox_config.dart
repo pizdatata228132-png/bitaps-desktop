@@ -12,6 +12,10 @@ import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
+// models.dart — part of main.dart и напрямую не импортируется; BUILD_NUMBER — compile-time
+// dart-define, значение совпадает при сборке (источник истины — models.dart:kBuildNumber).
+const int _kBuildNumber = int.fromEnvironment('BUILD_NUMBER', defaultValue: 0);
+
 /// Схемы share-link, которые умеет разобрать [outboundFromKey] — единый источник
 /// правды для гарда подключения (connection.dart), чтобы он не отставал от парсера.
 const List<String> kSupportedKeySchemes = [
@@ -389,20 +393,30 @@ const List<String> kTrustedBitapsDomains = ['bitapsvpn.com', 'bit-core.online'];
 /// ноды сырыми IP. Доверять ЛЮБОМУ IP нельзя (тот же MITM), поэтому список закрытый и
 /// вшит в приложение: скомпрометированная выдача сможет указать только наши же машины,
 /// а подделать их REALITY-ключи со стороны нельзя. NL/FR/HK здесь НАМЕРЕННО нет
-/// (инцидент 29.07 — ноды скомпрометированы). При смене флота править ВМЕСТЕ с
-/// subserver.py/healer.py, иначе новые ноды не пройдут гейт у пользователей.
+/// (инцидент 29.07 — ноды скомпрометированы, заменены на 4VPS 25.08: FI/NL/FR/PL/ES —
+/// их НОВЫЕ адреса выше; старые 212.237.219.223/176.222.53.193/151.241.228.127/
+/// 82.40.37.176/162.141.93.9 здесь намеренно отсутствуют). При смене флота править
+/// ВМЕСТЕ с subserver.py/healer.py, иначе новые ноды не пройдут гейт у пользователей.
+/// Урок 29.08: список забыл обновить при переезде — приложение молча выкидывало пять
+/// новых нод из подписки (skipped), юзер видел 5 вместо 10 обычных.
+/// 30.08: RO/IS (185.165.171.176, 185.146.234.208) ВЫВЕДЕНЫ из флота навсегда — владелец
+/// не планирует оплачивать сервера; из подписки и эталонов тоже убраны.
 const Set<String> kTrustedNodeIps = {
-  '212.237.219.223',  // 🇫🇮 Финляндия
-  '176.222.53.193',   // 🇳🇱 Нидерланды
-  '151.241.228.127',  // 🇫🇷 Франция
-  '82.40.37.176',     // 🇵🇱 Польша
-  '162.141.93.9',     // 🇪🇸 Испания
-  '185.165.171.176',  // 🇷🇴 Румыния
-  '185.146.234.208',  // 🇮🇸 Исландия
-  '45.144.30.167',    // 🇷🇺 Россия
-  '85.209.157.21',    // 🇮🇱 Израиль
-  '5.180.27.235',     // 🇰🇿 Казахстан
-  '5.253.28.56',      // 🇮🇳 Индия (поднимается)
+  '153.80.241.50',    // 🇫🇮 Финляндия (4VPS, 25.08)
+  '147.45.50.154',    // 🇳🇱 Нидерланды (4VPS, 25.08)
+  '109.172.55.18',    // 🇫🇷 Франция (4VPS, 25.08)
+  '45.140.204.174',   // 🇵🇱 Польша (4VPS, 25.08)
+  '138.124.62.144',   // 🇪🇸 Испания (4VPS, 25.08)
+  '94.103.2.146',     // 🇷🇺 Россия (4VPS Мск, 11.09 — взамен умершей у хостера)
+  '45.148.103.121',   // 🇨🇦 Канада (4VPS, 11.09)
+  '45.155.68.30',     // 🇮🇹 Италия (4VPS, 11.09)
+  '138.124.66.20',    // 🇩🇪 Германия (4VPS, 11.09)
+  '81.17.159.21',     // 🇩🇰 Дания (4VPS, 11.09)
+  '138.124.249.129',  // 🇧🇪 Бельгия (4VPS, 11.09)
+  // IL/KZ (85.209.157.21, 5.180.27.235) и Индия УБРАНЫ 11.09: юфо-хостинг владелец больше
+  // не использует — их ноды мертвы и из флота выведены везде.
+  // Индия (5.253.28.56) УБРАНА (аудит 09.09): VM мертва у хостера; если IP переотдадут —
+  // чужой сервер прошёл бы гейт. Вернём вместе с поднятием VM.
 };
 
 bool isTrustedBitapsHost(String host) {
@@ -699,6 +713,7 @@ Future<SubFetchResult> fetchSubscription(
   String url, {
   required String hwid,
   String deviceOs = '',
+  String deviceModel = '',
   http.Client? client,
   Duration timeout = const Duration(seconds: 20),
 }) async {
@@ -710,6 +725,14 @@ Future<SubFetchResult> fetchSubscription(
       'accept': 'application/json',
       if (hwid.isNotEmpty) 'x-hwid': hwid,
       if (deviceOs.isNotEmpty) 'x-device-os': deviceOs,
+      // 26.08 (владелец): модель устройства для списка устройств — вместо голого «Android»
+      // человек видит «Pixel 7 · 176.15.x.x». Пустая строка — заголовок не шлём вообще.
+      if (deviceModel.isNotEmpty) 'x-device-model': deviceModel,
+      // 25.08 (телеметрия владельца): помечаем себя как НАШЕ приложение + номер сборки.
+      // Хаб кладёт это в реестр клиентов: админка видит, кто на нашем приложении и на какой
+      // версии (а кто на Happ — по отсутствию метки). Значения идентифицируют приложение,
+      // не человека: hwid — случайный идентификатор установки, не аккаунт.
+      'x-bitaps-app': _kBuildNumber > 0 ? '$_kBuildNumber' : 'dev',
     });
     // Ответ читаем потоком с жёстким капом (аудит): c.get буферизует тело целиком, и
     // гигабайтный ответ — это OOM ещё до разбора. content-length проверяем первым (дёшево),
@@ -811,12 +834,13 @@ Future<SubFetchResult> fetchSubscriptionCached(
   String url, {
   required String hwid,
   String deviceOs = '',
+  String deviceModel = '',
   http.Client? client,
   Duration timeout = const Duration(seconds: 20),
   SubCacheStore? store, // null — кэш не работает, поведение как у голого fetchSubscription
 }) async {
   final sub =
-      await fetchSubscription(url, hwid: hwid, deviceOs: deviceOs, client: client, timeout: timeout);
+      await fetchSubscription(url, hwid: hwid, deviceOs: deviceOs, deviceModel: deviceModel, client: client, timeout: timeout);
   if (sub.ok && sub.rawBody != null) {
     try {
       await store?.write(subCacheEncode(url, sub.rawBody!, DateTime.now()));

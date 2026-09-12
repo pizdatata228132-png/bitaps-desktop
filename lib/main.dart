@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform, File, Directory, Process, exit, stderr;
+import 'dart:io' show Platform, File, Directory, Process, ProcessStartMode, exit, stderr;
 import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flutter/material.dart';
@@ -8,6 +8,8 @@ import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:open_file/open_file.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -273,6 +275,7 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
   bool nodeStatsFailed = false;
   bool _statsLoading = false; // re-entrancy-гвард загрузки статистики
   Timer? _statsTimer; // периодическое обновление, пока открыта вкладка «Серверы»
+  Timer? _updTimer;   // проверка обновлений раз в 6 ч по ходу сессии (26.08)
   /// Список узлов сейчас показан ИЗ КЭША (выдача недоступна — сеть в режиме «белых списков»):
   /// дата того успешного ответа. null — свежая выдача из сети. Экран «Серверы» показывает
   /// пометку «список из кэша от <дата>» — молча подменять свежий список старым нельзя.
@@ -295,6 +298,10 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
   int accentIdx = 0, btnStyle = 0;
   int themeMode = 0; // 0 тёмная · 1 светлая · 2 системная
   bool autoConnect = false;
+  // «VPN всегда включён» (30.08, владелец): Android — BootReceiver поднимает последний туннель
+  // после перезагрузки телефона; десктоп — автозапуск с системой + авто-подключение. Юзеру
+  // после включения настройки вообще не нужно заходить в приложение.
+  bool alwaysOn = false;
   /// Демо-сессия там, где туннель поднять нечем (тумблер в Настройках, по умолчанию ВЫКЛ).
   /// Раньше демо включалось само и молча — оплативший человек видел «подключено» без туннеля.
   bool demoMode = false;
@@ -501,6 +508,10 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
     });
     _load();
     _checkUpdate();
+    // 26.08 (владелец): проверка обновлений не только на старте, но и по ходу сессии —
+    // раз в 6 ч. Диалог по-прежнему раз на запуск; с включённым автообновлением сборка
+    // подтягивается сама в фоне, хоть приложение и не закрывалось неделю.
+    _updTimer = Timer.periodic(const Duration(hours: 6), (_) => _checkUpdate());
     // Play Billing (Android): поднимаем purchaseStream и кэш цен заранее, чтобы пейвол
     // открывался с готовыми ценами магазина. Fail-soft — без Play-сервисов просто выключен.
     _initBilling();
@@ -750,6 +761,7 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
     _onbCtrl.dispose();
     _pinLockTimer?.cancel();
     _statsTimer?.cancel();
+    _updTimer?.cancel();
     _conn.dispose();
     _spin.dispose();
     _wave.dispose();
@@ -798,6 +810,7 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
       mode = (p.getInt('mode') ?? 0).clamp(0, modeLabels.length - 1);
       themeMode = (p.getInt('themeMode') ?? 0).clamp(0, 2);
       autoConnect = p.getBool('autoConnect') ?? false;
+      alwaysOn = p.getBool('alwaysOn') ?? false;
       demoMode = p.getBool('demoMode') ?? false;
       // Приговоры по узлам переживают перезапуск: иначе после каждого открытия приложения
       // человек снова видел бы прочерки и заново гонял проверку.
@@ -897,7 +910,14 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
     _loadNodes(); // узлы подписки для экрана «Серверы» — до первого подключения
     // Авто-коннект НЕ должен подниматься сквозь блокировку или без логина: если экран заблокирован
     // (_locked) — стартуем после разблокировки (см. _tryUnlock), иначе пробуем сразу.
-    if (!_locked) { _maybeAutoConnect(); _recoverOrphanedConnection(); }
+    // ПОРЯДОК ВАЖЕН (30.08): сначала усыновление живого туннеля, авто-коннект — только если
+    // туннеля не оказалось. Раньше они шли одновременно: автоконнект детонировал через 500 мс,
+    // не дожидаясь проверки, — и переподключал уже работающий VPN.
+    if (!_locked) {
+      _recoverOrphanedConnection().then((adopted) {
+        if (!adopted) _maybeAutoConnect();
+      });
+    }
   }
 
   // Поднять авто-коннект, только если он включён, туннель выключен, экран разблокирован и есть логин.
@@ -908,22 +928,42 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
     });
   }
 
-  /// Старт с НАШИМ прокси в системе, но без живой сессии: прошлая сессия умерла некрасиво
-  /// (краш/перезагрузка/отмена пароля на уборке) — иконка «VPN» горит, а приложение писало бы
-  /// «не подключено». Вместо этого честно показываем «соединение потеряно — переподключаюсь»
-  /// и запускаем подключение сами. Обычный запуск (прокси нет) — ничего не делаем.
-  /// Только десктоп: там наш след в системе — системный прокси (SystemProxy.looksOurs).
-  Future<void> _recoverOrphanedConnection() async {
-    if (!kRealTunnel || TunnelEngine.kind() != EngineKind.desktopXray) return;
-    if (_locked || conn != 0) return;
-    try {
-      if (!await SystemProxy.looksOurs()) return;
-    } catch (_) {
-      return;
+  /// Старт приложения при уже живом нашем следе в системе, но без живой сессии в этом процессе
+  /// (свайп-убийство/перезагрузка). Возвращает true, если туннель жив и сессия усыновлена
+  /// (авто-коннект тогда НЕ запускаем — владелец: возврат в приложение не должен дёргать
+  /// реконнект рабочего VPN). Десктоп: след — наш системный прокси, а движок — наш процесс:
+  /// прокси жив без движка = движок умер → честный реконнект (true — подключение пошло).
+  Future<bool> _recoverOrphanedConnection() async {
+    if (!kRealTunnel) return false;
+    if (_locked || conn != 0) return false;
+    final kind = TunnelEngine.kind();
+    if (kind == EngineKind.desktopXray) {
+      try {
+        if (!await SystemProxy.looksOurs()) return false;
+      } catch (_) {
+        return false;
+      }
+      if (!mounted || conn != 0 || _locked) return false;
+      _toast(tr('Соединение потеряно — переподключаюсь…'));
+      toggle(); // десктоп: движок — наш процесс, прокси жив без него = он умер, честный реконнект
+      return true;
     }
-    if (!mounted || conn != 0 || _locked) return;
-    _toast(tr('Соединение потеряно — переподключаюсь…'));
-    toggle(); // обычный путь подключения: выбор лучшей ноды, verify, автоперебор
+    if (kind == EngineKind.androidXray) {
+      bool alive;
+      try {
+        alive = await TunnelEngine.instance.tunnelAlive();
+      } catch (_) {
+        alive = false;
+      }
+      if (!alive || !mounted || conn != 0 || _locked) return false;
+      // 30.08 (владелец): туннель ЖИВ — НЕ реконнектим, а усыновляем. Раньше тут был
+      // безусловный toggle(): «закрыл вкладку → открыл — а оно переподключается», хотя VPN
+      // и так работал. Теперь интерфейс просто честно показывает текущий туннель.
+      if (bestServer) setState(() => server = serverForMode(mode));
+      _conn.adoptRunningTunnel();
+      return true;
+    }
+    return false;
   }
 
   // тема: 0 тёмная · 1 светлая · 2 системная (следует за настройкой ОС).
@@ -955,6 +995,7 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
     await p.setInt('themeMode', themeMode);
     await p.setString('lang', appLang);
     await p.setBool('autoConnect', autoConnect);
+    await p.setBool('alwaysOn', alwaysOn);
     await p.setBool('demoMode', demoMode);
     await p.setBool('bestServer', bestServer);
     await p.setString('serverId', server.id); // ручной выбор восстанавливаем в _load при bestServer=false
@@ -1057,8 +1098,15 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
 
   // режим реально подбирает сервер: Стрим→мин.нагрузка, Игры/Авто→мин.пинг, Прив→зарубежный (иначе лучший)
   Server serverForMode(int m) {
-    final avail = fleet.where((s) => s.available).toList();
-    if (avail.isEmpty) return kNoServer;
+    var avail = fleet.where((s) => s.available).toList();
+    if (avail.isEmpty) {
+      // Все узлы помечены «недоступными» (stale-приговоры после сбоя сети: замеры писались
+      // в момент обрыва и пережили его). Авто-режим обязан ВСЁ РАВНО пробовать — приговор это
+      // замер прошлого момента, а не диагноз; иначе автоподключение молча умирало, пока
+      // человек вручную не нажмёт «проверить серверы» (инцидент владельца 30.08).
+      avail = fleet.toList();
+      if (avail.isEmpty) return kNoServer;
+    }
     // Нагрузку узлов подписка не сообщает (у всех 0) — тогда «Стрим» сортировал список
     // произвольно. Есть настоящие цифры — сортируем по ним, нет — как везде, по отклику.
     if (m == 1 && avail.any((s) => s.load > 0)) {

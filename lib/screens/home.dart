@@ -22,8 +22,8 @@ extension ShellHome on ShellState {
     // Автоперебор (режим «лучший сервер»): какой кандидат на пробе и который он по счёту.
     // Название сервера — через tr(): это страна из выдачи, она есть в словаре kCountryEn.
     final tryLine = appLang == 'en'
-        ? 'trying ${tr(_conn.tryServer)}… (${_conn.tryAttempt}/${ConnectionController.kMaxTryAttempts})'
-        : 'пробуем ${tr(_conn.tryServer)}… (${_conn.tryAttempt}/${ConnectionController.kMaxTryAttempts})';
+        ? 'trying ${tr(_conn.tryServer)}… (${_conn.tryAttempt})'
+        : 'пробуем ${tr(_conn.tryServer)}… (${_conn.tryAttempt})';
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
       children: [
@@ -168,6 +168,30 @@ extension ShellHome on ShellState {
             Switch(value: bestServer, activeThumbColor: C.accent, activeTrackColor: C.accent.withValues(alpha: 0.35), onChanged: _setBestServer),
           ]))),
         ),
+        const SizedBox(height: 10),
+        // «Авто-подключение» (30.08, владелец: вынесено из Настроек под автовыбор сервера):
+        // один тумблер = держать VPN всегда включённым. Внутри себя включает авто-подключение
+        // при запуске, авто-ПЕРЕподключение при обрыве и автостарт после перезагрузки устройства
+        // (Android — BootReceiver, десктоп — запуск с системой).
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          excludeFromSemantics: true,
+          onTap: () => _setAlwaysOnHome(!alwaysOn),
+          child: _card(child: MergeSemantics(child: Row(children: [
+            _gIcon(Icons.all_inclusive),
+            const SizedBox(width: 12),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(tr('Авто-подключение'), style: disp(15, w: FontWeight.w600)),
+              const SizedBox(height: 2),
+              Text(alwaysOn
+                  ? tr('VPN будет работать постоянно — даже после перезагрузки устройства')
+                  : tr('выключено — подключать вручную'),
+                style: mono(11)),
+            ])),
+            const SizedBox(width: 8),
+            Switch(value: alwaysOn, activeThumbColor: C.accent, activeTrackColor: C.accent.withValues(alpha: 0.35), onChanged: _setAlwaysOnHome),
+          ]))),
+        ),
       ],
     );
   }
@@ -258,6 +282,22 @@ extension ShellHome on ShellState {
       bestServer = v;
       if (v && conn == 0) server = serverForMode(mode);
     });
+    _save();
+  }
+
+  // Тумблер «Авто-подключение» на Главной (30.08): один выключатель на три механизма —
+  // авто-подключение при запуске, авто-ПЕРЕподключение при обрыве и автостарт после
+  // перезагрузки (BootReceiver/launch-at-startup). Юзеру не нужно знать про внутренности.
+  void _setAlwaysOnHome(bool v) {
+    rebuild(() {
+      alwaysOn = v;
+      autoConnect = v;
+      autoReconnect = v;
+    });
+    if (v && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      rebuild(() => autoLaunch = true);
+      try { launchAtStartup.enable(); } catch (_) {/* тост не нужен — флаг всё равно сохранён */}
+    }
     _save();
   }
 

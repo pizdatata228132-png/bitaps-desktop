@@ -19,9 +19,59 @@ extension ShellApi on ShellState {
       final p = await SharedPreferences.getInstance();
       // «Больше не предлагать эту версию» — выбор человека важнее нового запуска.
       if ((p.getInt('updateSkipBuild') ?? 0) >= latest) return;
+      // «Позже» персистим (аудит 09.09, P2): иначе в долгой сессии диалог всплывал каждые
+      // 6 часов по таймеру вопреки заявленному «один раз на запуск». Просим не чаще раза в сутки.
+      final laterAt = p.getInt('updateLaterAt') ?? 0;
+      if (DateTime.now().millisecondsSinceEpoch - laterAt < 86400000) return;
+      // 26.08 (владелец): включённое ОДИН раз автообновление — дальше сборки подтягиваются
+      // сами, без диалога: скачали → запустили установщик → ушли на перезапуск.
+      if (p.getBool('autoUpdate') ?? false) {
+        await _autoApply(latest);
+        return;
+      }
       if (!mounted) return;
       _askUpdate(latest);
     } catch (_) {/* тихо */}
+  }
+
+  /// Самостоятельное обновление: скачать инсталлятор платформы в temp и запустить его.
+  /// Linux (tar.gz) сам себя не ставит — там честный диалог как раньше. Любой сбой —
+  /// тот же диалог: авто-путь обязан деградировать в ручной, а не в тишину.
+  Future<void> _autoApply(int latest) async {
+    const dl = 'https://origin.bit-core.online/dl/';
+    final file = Platform.isAndroid
+        ? 'bitaps.apk'
+        : Platform.isWindows
+            ? 'bitaps-setup.exe'
+            : Platform.isMacOS
+                ? 'bitaps-macos.dmg'
+                : null;
+    if (file == null) {
+      if (mounted) _askUpdate(latest);
+      return;
+    }
+    try {
+      _toast(tr('Обновление: скачиваю новую сборку…'));
+      final r = await http.get(Uri.parse('$dl$file')).timeout(const Duration(minutes: 5));
+      if (r.statusCode != 200 || r.bodyBytes.length < 100000) {
+        throw Exception('bad download ${r.statusCode}');
+      }
+      final path = '${Directory.systemTemp.path}${Platform.isWindows ? '\\' : '/'}bitaps-update-$latest-$file';
+      await File(path).writeAsBytes(r.bodyBytes, flush: true);
+      if (Platform.isAndroid) {
+        // open_file через FileProvider сам откроет системный установщик APK
+        final res = await OpenFile.open(path);
+        if (res.type != ResultType.done) throw Exception(res.message);
+      } else if (Platform.isWindows) {
+        await Process.start(path, [], mode: ProcessStartMode.detached);
+      } else if (Platform.isMacOS) {
+        await Process.start('open', [path], mode: ProcessStartMode.detached);
+      }
+      // установщик пошёл — уходим, чтобы обновление встало на незанятые файлы
+      exit(0);
+    } catch (_) {
+      if (mounted) _askUpdate(latest);
+    }
   }
 
   // Единственный диалог обновления. Работу не блокирует: обычный dismissible-диалог, любой
@@ -41,6 +91,16 @@ extension ShellApi on ShellState {
           style: mono(13, c: C.text))),
         actions: [
           TextButton(
+            // 26.08: согласие на автообновление — один раз. Дальше сборки ставятся сами.
+            onPressed: () async {
+              Navigator.pop(ctx);
+              final p = await SharedPreferences.getInstance();
+              await p.setBool('autoUpdate', true);
+              _toast(tr('Автообновление включено — дальше всё само'));
+              await _autoApply(latest);
+            },
+            child: Text(tr('Всегда автоматически'), style: mono(13, c: C.accent, w: FontWeight.w700))),
+          TextButton(
             onPressed: () async {
               Navigator.pop(ctx);
               final p = await SharedPreferences.getInstance();
@@ -48,7 +108,13 @@ extension ShellApi on ShellState {
             },
             child: Text(tr('Больше не предлагать эту версию'), style: mono(13, c: C.muted))),
           TextButton(
-            onPressed: () => Navigator.pop(ctx),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              final p = await SharedPreferences.getInstance();
+              // «Позже» — пишем дату: спросим не раньше чем через сутки (даже если сессия длинная
+              // и 6-часовой таймер снова дёрнет _checkUpdate).
+              await p.setInt('updateLaterAt', DateTime.now().millisecondsSinceEpoch);
+            },
             child: Text(tr('Позже'), style: mono(13, c: C.muted))),
           TextButton(
             onPressed: () { Navigator.pop(ctx); _open(kDownloadUrl); },
@@ -695,6 +761,29 @@ extension ShellApi on ShellState {
     }
   }
 
+  /// Модель устройства для списка устройств (26.08): «Pixel 7» вместо голого «android».
+  /// Резолв один раз за процесс (кэш-статик), сбой — пустая строка, заголовок не уезжает.
+  static String? _devModelCache;
+  Future<String> _deviceModel() async {
+    if (_devModelCache != null) return _devModelCache!;
+    var m = '';
+    try {
+      final di = DeviceInfoPlugin();
+      if (Platform.isAndroid) {
+        final a = await di.androidInfo;
+        m = [a.manufacturer, a.model].where((s) => s.isNotEmpty).join(' ').trim();
+      } else if (Platform.isIOS) {
+        m = (await di.iosInfo).utsname.machine; // «iPhone14,2» — точнее маркетингового имени
+      } else if (Platform.isMacOS) {
+        m = (await di.macOsInfo).model;
+      } else if (Platform.isWindows) {
+        m = (await di.windowsInfo).productName;
+      }
+    } catch (_) {/* без модели — живём */}
+    _devModelCache = m;
+    return m;
+  }
+
   /// Подтянуть узлы подписки БЕЗ подключения — чтобы список серверов был живым сразу после
   /// входа, а не только после первого коннекта. Тихо: сбой сети просто оставляет прежний список.
   /// Под «белыми списками» выдача недоступна — fetchSubscriptionCached молча поднимает список
@@ -704,7 +793,7 @@ extension ShellApi on ShellState {
     final key = keyStr.trim();
     if (!isSubscriptionUrl(key) || hwid.isEmpty) return;
     try {
-      final sub = await fetchSubscriptionCached(key, hwid: hwid, deviceOs: Platform.operatingSystem, store: subCacheStore);
+      final sub = await fetchSubscriptionCached(key, hwid: hwid, deviceOs: Platform.operatingSystem, deviceModel: await _deviceModel(), store: subCacheStore);
       if (!mounted) return;
       // Отметка свежести — только по успешному ответу сервиса ИЗ СЕТИ: открытие «Серверов» гоняет
       // fetch не чаще раза в 5 минут (см. _maybeRefreshNodes), а сбой/кэш не должен его откладывать —

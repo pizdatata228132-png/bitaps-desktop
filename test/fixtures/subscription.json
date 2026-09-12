@@ -12,7 +12,7 @@
  {"remarks":"🇫🇮 Финляндия",
   "outbounds":[
    {"tag":"proxy","protocol":"vless",
-    "settings":{"vnext":[{"address":"212.237.219.223","port":8443,
+    "settings":{"vnext":[{"address":"153.80.241.50","port":8443,
       "users":[{"id":"11111111-2222-3333-4444-555555555555","encryption":"none","flow":"xtls-rprx-vision"}]}]},
     "streamSettings":{"security":"reality","network":"tcp",
       "realitySettings":{"serverName":"ya.ru","fingerprint":"firefox",
@@ -21,7 +21,7 @@
  {"remarks":"🇳🇱 Нидерланды",
   "outbounds":[
    {"tag":"proxy","protocol":"vless",
-    "settings":{"vnext":[{"address":"176.222.53.193","port":8443,
+    "settings":{"vnext":[{"address":"147.45.50.154","port":8443,
       "users":[{"id":"11111111-2222-3333-4444-555555555555","encryption":"none","flow":"xtls-rprx-vision"}]}]},
     "streamSettings":{"security":"reality","network":"tcp",
       "realitySettings":{"serverName":"ya.ru","fingerprint":"firefox",

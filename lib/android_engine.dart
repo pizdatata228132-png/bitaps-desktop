@@ -11,6 +11,7 @@
 // считают тег «proxy», которого при балансировщике не существует, и всегда показывали бы ноль.
 
 import 'package:flutter_v2ray_client/flutter_v2ray.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'desktop_engine.dart' show EngineUnavailable;
 
@@ -18,6 +19,9 @@ class AndroidXrayEngine {
   V2ray? _v2ray;
   bool _initialized = false;
   void Function(String state)? _onState;
+  /// Скорость туннеля от плагина (kbps): плашка на Главной раньше на Android вечно показывала
+  /// 0 — метрик xray у нас там нет, но V2RayStatus плагина несёт uploadSpeed/downloadSpeed.
+  void Function(int upKbps, int downKbps)? _onSpeed;
   String _state = 'disconnected'; // последнее состояние от плагина
   /// Видели ли «подключено» в ТЕКУЩЕЙ попытке. До этого момента «отключено» — не обрыв.
   bool _sawConnected = false;
@@ -29,6 +33,10 @@ class AndroidXrayEngine {
     final v = _v2ray ??= V2ray(onStatusChanged: (s) {
       _state = _mapState(s.state);
       if (_state == 'connected') _sawConnected = true;
+      // скорость шлём только при живом туннеле: байты/с плагина → кбит/с плашки
+      if (_state == 'connected' && (s.uploadSpeed > 0 || s.downloadSpeed > 0)) {
+        _onSpeed?.call((s.uploadSpeed * 8 / 1000).round(), (s.downloadSpeed * 8 / 1000).round());
+      }
       // «Отключено» ДО первого «подключено» наверх не поднимаем.
       //
       // Плагин рассылает состояние широковещательно и с задержкой. Перед стартом нового
@@ -71,6 +79,14 @@ class AndroidXrayEngine {
     await _stop(v);
     _sawConnected = false; // новая попытка: «отключено» до «подключено» снова не считается обрывом
     _onState = onState;
+    // «VPN всегда включён»: BootReceiver после перезагрузки поднимает ПОСЛЕДНИЙ рабочий
+    // туннель. Пишем конфиг в дефолтные SharedPreferences (FlutterSharedPreferences) — тот же
+    // стор, где лежит флаг alwaysOn: приёмник читает оба ключа без каналов и движка.
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setString('bootConfig', configJson);
+      await p.setString('bootRemark', remark);
+    } catch (_) {/* не мешаем подключению */}
     await v.startV2Ray(
       remark: remark,
       config: configJson,
@@ -80,8 +96,12 @@ class AndroidXrayEngine {
 
   Future<void> disconnect() async {
     _onState = null; // события собственной остановки наверх не поднимаем
+    _onSpeed = null;
     await _stop(await _engine());
   }
+
+  /// Колбэк живой скорости (kbps) — назначает engine.dart на время сессии.
+  set onSpeed(void Function(int upKbps, int downKbps)? cb) => _onSpeed = cb;
 
   /// Остановить туннель и дождаться, пока плагин это подтвердит. Без ожидания следующий
   /// старт мог прийти в ещё живой сервис — тогда он игнорировал новый конфиг.
@@ -159,6 +179,18 @@ class AndroidXrayEngine {
     try {
       final v = _v2ray;
       if (v == null) return -1;
+      return await v.getConnectedServerDelay(url: url);
+    } catch (_) {
+      return -1;
+    }
+  }
+
+  /// Тот же вопрос, но с инициализацией плагина при необходимости (25.08): после свайп-
+  /// убийства новый процесс имеет _v2ray == null, а VpnService (sticky) продолжает жить —
+  /// спросить ОС обязаны уметь и с холодного старта, иначе «живой VPN при Отключено».
+  Future<int> connectedDelayAlive(String url) async {
+    try {
+      final v = await _engine();
       return await v.getConnectedServerDelay(url: url);
     } catch (_) {
       return -1;

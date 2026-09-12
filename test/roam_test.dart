@@ -5,27 +5,23 @@
 // killswitch_test и reconnect_test), поэтому тест фиксирует решающее правило
 // ConnectionController.roamContinues, которым цикл в toggle() выбирает между следующим
 // кандидатом и честной остановкой:
-//   • режим «лучший сервер»: кандидаты 1..4 мимо → пробуем следующего (до kMaxTryAttempts
-//     за одно нажатие — человек больше не жмёт «подключиться» по пять раз вручную);
-//   • пятый мимо → стоп: бесконечный перебор при лежащей сети долбил бы узлы вечно;
+//   • режим «лучший сервер»: перебор идёт по ВСЕМ кандидатам подписки (25.08: кап в 5
+//     попыток убран по просьбе владельца — стоп только по исчерпанию списка в toggle());
 //   • ручной выбор сервера → стоп сразу (поведение прежнее: причина + мягкая подсказка
 //     «выбери другой или включи "лучший сервер"»).
 import 'package:flutter_test/flutter_test.dart';
 import 'package:bitaps_vpn/main.dart';
 
 void main() {
-  test('автоперебор: в режиме «лучший сервер» — до 5 кандидатов за нажатие, дальше стоп', () {
-    for (var attempt = 1; attempt < ConnectionController.kMaxTryAttempts; attempt++) {
+  test('автоперебор: в режиме «лучший сервер» — все кандидаты по очереди, капа нет', () {
+    for (var attempt in [1, 2, 5, 12, 18]) {
       expect(ConnectionController.roamContinues(true, attempt), isTrue,
-          reason: 'кандидат $attempt мимо — пробуем следующего тем же нажатием');
+          reason: 'попытка $attempt мимо — перебор продолжается, пока кандидаты не исчерпаны');
     }
-    expect(ConnectionController.roamContinues(true, ConnectionController.kMaxTryAttempts), isFalse,
-        reason: 'все ${ConnectionController.kMaxTryAttempts} мимо — честная остановка');
-    expect(ConnectionController.kMaxTryAttempts, 5, reason: 'лимит из ТЗ: 5 кандидатов за нажатие');
   });
 
   test('автоперебор: ручной выбор сервера перебор НЕ запускает', () {
-    for (var attempt = 1; attempt <= ConnectionController.kMaxTryAttempts; attempt++) {
+    for (var attempt in [1, 2, 5, 12, 18]) {
       expect(ConnectionController.roamContinues(false, attempt), isFalse,
           reason: 'ручной выбор — одна попытка и подсказка, как раньше');
     }

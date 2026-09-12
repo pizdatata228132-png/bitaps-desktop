@@ -13,6 +13,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
+
 import 'android_engine.dart';
 import 'desktop_engine.dart';
 import 'native_tunnel.dart';
@@ -228,6 +230,26 @@ class TunnelEngine {
 
   final AndroidXrayEngine _android = AndroidXrayEngine();
 
+  /// Жив ли туннель с точки зрения ОС (25.08, исправлено 30.08): VpnService на Android липкий
+  /// (переживает свайп-убийство приложения), и новый процесс обязан это узнать — иначе он
+  /// стартует с «Отключено» при работающем VPN (баг шестерёнки) и дёргает реконнект.
+  /// 30.08: спрашиваем СИСТЕМУ (ConnectivityManager, канал bitaps/system) — проверка через
+  /// задержку ядра плагина (connectedDelayAlive) в новом процессе врала «мёртв», потому что
+  /// у плагина там нет своего запущенного ядра. Фолбэк на старый способ оставлен.
+  Future<bool> tunnelAlive() async {
+    if (kind() != EngineKind.androidXray) return false;
+    try {
+      const ch = MethodChannel('bitaps/system');
+      final active = await ch.invokeMethod<bool>('isVpnActive');
+      if (active != null) return active;
+    } catch (_) {/* канала нет (старая нативка) — пробуем через плагин */}
+    try {
+      return (await _android.connectedDelayAlive('https://www.gstatic.com/generate_204')) >= 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Узел, к которому подключаемся на Android. Один — не список: движок там получает готовый
   /// конфиг записи подписки (см. xrayEntryConfigJson).
   SubNode _pickAndroidNode(List<SubNode> nodes, String? onlyTag) {
@@ -269,10 +291,11 @@ class TunnelEngine {
         }, onError: (_) => _events.add(EngineEvent(state)));
       },
     );
-    // Метрик на Android больше нет: конфиг подписки их не содержит, а добавлять свои значит
-    // снова отойти от проверенного. Счётчики скорости на этой платформе не показываем.
+    // Метрик xray на Android у нас нет, но скорость несёт сам плагин (V2RayStatus) — шлём
+    // её событием 'connected' (контроллер из таких событий берёт только down/up, безопасно).
     _metricsPort = null;
     _lastTotals = null;
+    _android.onSpeed = (up, down) => _events.add(EngineEvent('connected', upKbps: up, downKbps: down));
     _events.add(const EngineEvent('connected'));
   }
 

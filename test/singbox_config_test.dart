@@ -279,8 +279,9 @@ void main() {
       expect(isTrustedBitapsHost('bitapsvpn.com.evil.example.com'), isFalse);
       // сырые IP: доменный гейт не пропускает (URL/ключи), а узловый пропускает ТОЛЬКО
       // точные IP боевого флота — произвольный IP атакующего по-прежнему отброшен
-      expect(isTrustedBitapsHost('212.237.219.223'), isFalse);
-      expect(isTrustedNodeHost('212.237.219.223'), isTrue, reason: 'IP боевой ноды FI');
+      expect(isTrustedBitapsHost('153.80.241.50'), isFalse);
+      expect(isTrustedNodeHost('153.80.241.50'), isTrue, reason: 'IP боевой ноды FI (4VPS)');
+      expect(isTrustedNodeHost('212.237.219.223'), isFalse, reason: 'старое FI (vdsina) выведено из флота');
       expect(isTrustedNodeHost('203.0.113.66'), isFalse, reason: 'чужой IP отброшен');
     });
 
@@ -312,14 +313,14 @@ void main() {
 [
  {"remarks":"🇫🇮 Финляндия","outbounds":[
   {"tag":"proxy","protocol":"vless",
-   "settings":{"vnext":[{"address":"212.237.219.223","port":8443,
+   "settings":{"vnext":[{"address":"153.80.241.50","port":8443,
      "users":[{"id":"11111111-2222-3333-4444-555555555555","encryption":"none"}]}]},
    "streamSettings":{"network":"tcp"}}]}
 ]
 ''';
       final r = parseSubscription(body);
       expect(r.nodes.length, 1);
-      expect(r.nodes.single.server, '212.237.219.223');
+      expect(r.nodes.single.server, '153.80.241.50');
       expect(r.skipped, 0);
     });
 
