@@ -15,16 +15,23 @@ concurrency:
   group: release-desktop
   cancel-in-progress: false
 
-# ЕДИНЫЙ монотонный номер сборки. github.run_number сам по себе НЕЛЬЗЯ: он стартует с 1,
-# а на устройствах уже стоят сборки с BUILD_NUMBER 147 и android versionCode 2146 —
-# низкий номер = Android отказывается ставить обновление, а приложение считает себя
-# «новее» серверного и не зовёт обновиться. База 2144 + run_number: первый CI-прогон
-# даёт 2145+, всегда выше обоих старых счётчиков. run_number не убывает и не сбрасывается
-# (пока файл workflow не переименуют — тогда базу поднять вручную).
-env:
-  BN: ${{ 2144 + github.run_number }}
-
 jobs:
+  # ЕДИНЫЙ монотонный номер сборки. github.run_number сам по себе НЕЛЬЗЯ: он стартует с 1,
+  # а на устройствах уже стоят сборки с BUILD_NUMBER 147 и android versionCode 2146 —
+  # низкий номер = Android отказывается ставить обновление, а приложение считает себя
+  # «новее» серверного и не зовёт обновиться. Арифметики в выражениях Actions НЕТ
+  # (прогон с «${{ 2144 + github.run_number }}» в env упал ещё до джобов — валидация),
+  # поэтому считаем шеллом здесь и раздаём всем джобам через outputs.
+  # run_number не убывает и не сбрасывается (пока файл workflow не переименуют — тогда
+  # базу 2144 поднять вручную выше последнего выданного номера).
+  prep:
+    runs-on: ubuntu-latest
+    outputs:
+      bn: ${{ steps.bn.outputs.bn }}
+    steps:
+      - id: bn
+        run: echo "bn=$((2144 + ${{ github.run_number }}))" >> "$GITHUB_OUTPUT"
+
   # Быстрый гейт качества перед сборками: анализатор + юнит-тесты (генератор конфига туннеля
   # и разбор подписки). Платформенные каркасы для этого не нужны — только pub get.
   test:
@@ -51,7 +58,7 @@ jobs:
           XRAY_LOCATION_ASSET=xray-tmp xray-tmp/xray run -test -c /tmp/bitaps-cfg.json
 
   windows:
-    needs: test
+    needs: [test, prep]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -77,8 +84,8 @@ jobs:
           if (-not $ver) { throw "версия из pubspec.yaml не разобрана" }
           $comma = $ver -replace '\.', ','
           $c = Get-Content $rc -Raw
-          $c = $c -replace '#define VERSION_AS_NUMBER .*', "#define VERSION_AS_NUMBER $comma,${{ env.BN }}"
-          $c = $c -replace '#define VERSION_AS_STRING .*', "#define VERSION_AS_STRING `"$ver.${{ env.BN }}`""
+          $c = $c -replace '#define VERSION_AS_NUMBER .*', "#define VERSION_AS_NUMBER $comma,${{ needs.prep.outputs.bn }}"
+          $c = $c -replace '#define VERSION_AS_STRING .*', "#define VERSION_AS_STRING `"$ver.${{ needs.prep.outputs.bn }}`""
           $c = $c -replace 'VALUE "CompanyName", "[^"]*"', 'VALUE "CompanyName", "bitaps"'
           $c = $c -replace 'VALUE "FileDescription", "[^"]*"', 'VALUE "FileDescription", "bitaps VPN Client"'
           $c = $c -replace 'VALUE "ProductName", "[^"]*"', 'VALUE "ProductName", "bitaps VPN"'
@@ -88,7 +95,7 @@ jobs:
             if (-not (Select-String -Path $rc -Pattern ([regex]::Escape($needle)) -Quiet)) { throw "VERSIONINFO не применён: $needle" }
           }
           Select-String -Path $rc -Pattern 'CompanyName|ProductName|FileDescription|LegalCopyright|VERSION_AS_'
-      - run: flutter build windows --release --dart-define=BUILD_NUMBER=${{ env.BN }}
+      - run: flutter build windows --release --dart-define=BUILD_NUMBER=${{ needs.prep.outputs.bn }}
       # VPN-движок кладём РЯДОМ с исполняемым файлом: приложение ищет его там (desktop_engine.dart).
       # Версия и контрольная сумма закреплены (см. pkg/THIRD-PARTY.md) — молча подменённый бинарь
       # движка означал бы чужой код в туннеле пользователя.
@@ -145,9 +152,9 @@ jobs:
           $ver = (Select-String -Path pubspec.yaml -Pattern '^version:\s*([0-9]+\.[0-9]+\.[0-9]+)').Matches[0].Groups[1].Value
           if (-not $ver) { throw "версия из pubspec.yaml не разобрана" }
           $c = Get-Content $iss -Raw
-          $c = $c -replace '(?m)^AppVersion=.*', "AppVersion=$ver.${{ env.BN }}"
+          $c = $c -replace '(?m)^AppVersion=.*', "AppVersion=$ver.${{ needs.prep.outputs.bn }}"
           Set-Content $iss $c -NoNewline
-          if (-not (Select-String -Path $iss -Pattern ([regex]::Escape("AppVersion=$ver.${{ env.BN }}")) -Quiet)) { throw "AppVersion не применён" }
+          if (-not (Select-String -Path $iss -Pattern ([regex]::Escape("AppVersion=$ver.${{ needs.prep.outputs.bn }}")) -Quiet)) { throw "AppVersion не применён" }
           Select-String -Path $iss -Pattern '^AppVersion='
       - name: Installer (Inno Setup)
         run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" pkg\installer.iss'
@@ -185,7 +192,7 @@ jobs:
             SHA256SUMS.txt
 
   linux:
-    needs: test
+    needs: [test, prep]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -199,7 +206,7 @@ jobs:
       - run: flutter config --enable-linux-desktop
       - run: flutter create --org com.bitapsvpn --platforms=linux --project-name bitaps_vpn .
       - run: flutter pub get
-      - run: flutter build linux --release --dart-define=BUILD_NUMBER=${{ env.BN }}
+      - run: flutter build linux --release --dart-define=BUILD_NUMBER=${{ needs.prep.outputs.bn }}
       # тот же движок для Linux: в bundle → попадает и в tar.gz, и в AppImage
       - name: VPN-движок (xray) в сборку
         run: |
@@ -221,7 +228,7 @@ jobs:
       - name: AppImage
         run: bash pkg/build-appimage.sh
       - name: build_number.txt (для авто-проверки обновлений в приложении)
-        run: echo "${{ env.BN }}" > build_number.txt
+        run: echo "${{ needs.prep.outputs.bn }}" > build_number.txt
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
@@ -233,7 +240,7 @@ jobs:
             build_number.txt
 
   android:
-    needs: test
+    needs: [test, prep]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -324,14 +331,14 @@ jobs:
       # split-per-abi: с VPN-движком внутри универсальный APK весит вдвое больше нужного.
       # x86_64 не собираем: его всё равно никто не публикует (эмуляторы на Google Play — ниша).
       # --build-number: versionCode для Google Play (требует монотонного роста между выкладками).
-      - run: flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64 --build-number=${{ env.BN }} --dart-define=BUILD_NUMBER=${{ env.BN }}
+      - run: flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64 --build-number=${{ needs.prep.outputs.bn }} --dart-define=BUILD_NUMBER=${{ needs.prep.outputs.bn }}
       # AAB для Google Play: консоль принимает только App Bundle (APK — для прямой раздачи).
-      - run: flutter build appbundle --release --build-number=${{ env.BN }} --dart-define=BUILD_NUMBER=${{ env.BN }}
+      - run: flutter build appbundle --release --build-number=${{ needs.prep.outputs.bn }} --dart-define=BUILD_NUMBER=${{ needs.prep.outputs.bn }}
       # Store-вариант AAB: kStoreBuild=true убирает из пейвола внешние способы оплаты (бот/сайт) —
       # anti-steering по политике Play. Отличие только в dart-define, подпись та же. Первый AAB
       # уносим из выходного каталога, иначе вторая сборка перезапишет его.
       - run: mv build/app/outputs/bundle/release/app-release.aab /tmp/app-direct.aab
-      - run: flutter build appbundle --release --build-number=${{ env.BN }} --dart-define=BUILD_NUMBER=${{ env.BN }} --dart-define=STORE_BUILD=true
+      - run: flutter build appbundle --release --build-number=${{ needs.prep.outputs.bn }} --dart-define=BUILD_NUMBER=${{ needs.prep.outputs.bn }} --dart-define=STORE_BUILD=true
       # ПОДПИСЬ ПОСТОЯННЫМ КЛЮЧОМ. Без неё Flutter подписывает релиз отладочным ключом, который
       # на раннере генерируется заново КАЖДУЮ сборку — и новая версия не встаёт поверх старой:
       # Android отклоняет установку по несовпадению подписи («приложение не установлено»).
@@ -387,7 +394,7 @@ jobs:
   # Песочница ОТКЛЮЧЕНА намеренно: приложению нужно запускать вложенный движок и менять
   # системный прокси — под sandbox это невозможно.
   macos:
-    needs: test
+    needs: [test, prep]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -405,7 +412,7 @@ jobs:
           done
           grep -A1 app-sandbox macos/Runner/Release.entitlements
       - run: flutter pub get
-      - run: flutter build macos --release --dart-define=BUILD_NUMBER=${{ env.BN }}
+      - run: flutter build macos --release --dart-define=BUILD_NUMBER=${{ needs.prep.outputs.bn }}
       - name: VPN-движок (xray) в бандл — универсальный бинарь arm64+x86_64
         run: |
           ver=v26.3.27
@@ -448,7 +455,7 @@ jobs:
   # а наши нативные файлы применяются поверх из native_ios/ (паттерн Android-манифеста).
   # Подпись и выгрузка в App Store — через команду владельца в Xcode (см. native_ios/README-IOS.md).
   ios:
-    needs: test
+    needs: [test, prep]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -475,4 +482,4 @@ jobs:
           [ -n "$P" ] || { echo "пакет не найден в pub-cache"; exit 1; }
           [ -f "$P/flutter_v2ray_client.podspec" ] || cp "$P/flutter_v2ray.podspec" "$P/flutter_v2ray_client.podspec"
           ls "$P"
-      - run: flutter build ios --release --no-codesign --dart-define=BUILD_NUMBER=${{ env.BN }}
+      - run: flutter build ios --release --no-codesign --dart-define=BUILD_NUMBER=${{ needs.prep.outputs.bn }}
