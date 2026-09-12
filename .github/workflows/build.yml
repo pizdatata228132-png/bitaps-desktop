@@ -326,6 +326,18 @@ jobs:
           echo 'CmltcG9ydCBhbmRyb2lkLk1hbmlmZXN0CmltcG9ydCBhbmRyb2lkLmNvbnRlbnQucG0uUGFja2FnZU1hbmFnZXIKaW1wb3J0IGFuZHJvaWQub3MuQnVpbGQKaW1wb3J0IGFuZHJvaWQub3MuQnVuZGxlCmltcG9ydCBpby5mbHV0dGVyLmVtYmVkZGluZy5hbmRyb2lkLkZsdXR0ZXJBY3Rpdml0eQoKLy8g0KDQsNC30YDQtdGI0LXQvdC40LUg0L3QsCDRg9Cy0LXQtNC+0LzQu9C10L3QuNGPINGB0L/RgNCw0YjQuNCy0LDQtdC8INCh0KDQkNCX0KMg0L/RgNC4INC30LDQv9GD0YHQutC1LCDQsCDQvdC1INCyINC80L7QvNC10L3RgiDQv9C+0LTQutC70Y7Rh9C10L3QuNGPLgovLyDQn9GA0LjRh9C40L3QsDog0YHQu9GD0LbQsdCwIFZQTiDRgNCw0LHQvtGC0LDQtdGCINC60LDQuiDQv9GA0LjQvtGA0LjRgtC10YLQvdCw0Y8g0Lgg0L7QsdGP0LfQsNC90LAg0L/QvtC60LDQt9Cw0YLRjCDRg9Cy0LXQtNC+0LzQu9C10L3QuNC1LiDQldGB0LvQuCDQvdCwCi8vIEFuZHJvaWQgMTMrINGA0LDQt9GA0LXRiNC10L3QuNGPINC90LXRgiwg0L/QvtC60LDQt9Cw0YLRjCDQtdCz0L4g0L3QtSDRg9C00LDRkdGC0YHRjywgc3RhcnRGb3JlZ3JvdW5kINC90LUg0LLRi9C30YvQstCw0LXRgtGB0Y8g4oCUINC4Ci8vINGB0LjRgdGC0LXQvNCwINGD0LHQuNCy0LDQtdGCINGB0LvRg9C20LHRgyDRh9C10YDQtdC3INC/0Y/RgtGMINGB0LXQutGD0L3QtCAowqtkaWQgbm90IHRoZW4gY2FsbCBTZXJ2aWNlLnN0YXJ0Rm9yZWdyb3VuZMK7KS4KLy8g0KHQvdCw0YDRg9C20Lgg0Y3RgtC+INCy0YvQs9C70Y/QtNC10LvQviDRgtCw0Lo6INC/0L7QtNC60LvRjtGH0LjQu9GB0Y8sINCwINGH0LXRgNC10Lcg0LzQs9C90L7QstC10L3QuNC1INGC0YPQvdC90LXQu9GMINC+0YLQstCw0LvQuNC70YHRjyDRgSDQt9Cw0LLQuNGB0LDQvdC40LXQvC4KY2xhc3MgTWFpbkFjdGl2aXR5IDogRmx1dHRlckFjdGl2aXR5KCkgewogICAgb3ZlcnJpZGUgZnVuIG9uQ3JlYXRlKHNhdmVkSW5zdGFuY2VTdGF0ZTogQnVuZGxlPykgewogICAgICAgIHN1cGVyLm9uQ3JlYXRlKHNhdmVkSW5zdGFuY2VTdGF0ZSkKICAgICAgICBpZiAoQnVpbGQuVkVSU0lPTi5TREtfSU5UID49IEJ1aWxkLlZFUlNJT05fQ09ERVMuVElSQU1JU1UgJiYKICAgICAgICAgICAgY2hlY2tTZWxmUGVybWlzc2lvbihNYW5pZmVzdC5wZXJtaXNzaW9uLlBPU1RfTk9USUZJQ0FUSU9OUykgIT0gUGFja2FnZU1hbmFnZXIuUEVSTUlTU0lPTl9HUkFOVEVECiAgICAgICAgKSB7CiAgICAgICAgICAgIHJlcXVlc3RQZXJtaXNzaW9ucyhhcnJheU9mKE1hbmlmZXN0LnBlcm1pc3Npb24uUE9TVF9OT1RJRklDQVRJT05TKSwgMTAwMSkKICAgICAgICB9CiAgICB9Cn0K' | base64 -d >> "$MAIN"
           grep -q 'POST_NOTIFICATIONS' "$MAIN" && echo "MainActivity ok" || (echo "MainActivity MISSING" && exit 1)
       - run: flutter pub get
+      # 29.08-патч pub-cache flutter_v2ray_client: весь IPv6 — в туннель (addRoute("::",0)).
+      # TG-клиент любит IPv6-DC: без этого маршрута v6 уходит МИМО vpn напрямую, в РФ
+      # блокируется — клиент висит, когда остальное работает. Патч локальный и теряется при
+      # чистом pub get, поэтому накатываем здесь, СТРОГО после pub get, с grep-гейтом.
+      - name: 'Патч flutter_v2ray_client — addRoute("::",0) (вис TG-клиента)'
+        run: |
+          F=$(find "$PUB_CACHE/hosted" -path "*flutter_v2ray_client*/android/src/main/java/*/v2ray/services/V2rayVPNService.java" | head -1)
+          [ -n "$F" ] || { echo "V2rayVPNService.java не найден в pub-cache"; exit 1; }
+          grep -q 'addRoute("::", 0)' "$F" && { echo "уже пропатчено апстримом"; exit 0; }
+          perl -0pi -e 's/(\n(\s*)if \(v2rayConfig\.BYPASS_SUBNETS)/\n$2\/\/ v6 в туннель: TG любит IPv6-DC, иначе v6 уходит мимо VPN и клиент виснет (bitaps 29.08)\n$2builder.addRoute("::", 0);$1/' "$F"
+          grep -q 'addRoute("::", 0)' "$F" || { echo "ПАТЧ НЕ ПРИМЕНИЛСЯ — форма кода в плагине изменилась"; exit 1; }
+          echo "patched: $F"
       - run: dart run flutter_launcher_icons
       - run: yes | flutter doctor --android-licenses || true
       # split-per-abi: с VPN-движком внутри универсальный APK весит вдвое больше нужного.
