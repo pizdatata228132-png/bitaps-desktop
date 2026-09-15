@@ -164,8 +164,8 @@ const Map<String, String> _kEn = {
   'устанавливаем соединение…': 'establishing connection…',
   'Подключиться': 'Connect',
   'Скорость появится после подключения': 'Speed will appear once connected',
-  'Режим подбирает сервер: Авто/Игры — минимальный отклик, Стрим — наименьшая нагрузка, Прив. — самый быстрый узел.':
-      'Mode picks the server: Auto/Games — lowest latency, Stream — lowest load, Private — the fastest node.',
+  'Режим подбирает сервер: Авто — баланс отклика и стабильности, Стрим — устойчивость канала, Игры — минимальный джиттер, Прив. — зарубежный узел.':
+      'Mode picks the server: Auto — latency/stability balance, Stream — channel stability, Games — lowest jitter, Private — a foreign node.',
   'сервер не выбран': 'no server selected',
   'появится вместе с подпиской': 'appears with your subscription',
   'сменить': 'change',

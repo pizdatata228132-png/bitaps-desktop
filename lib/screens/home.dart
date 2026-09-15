@@ -80,7 +80,7 @@ extension ShellHome on ShellState {
             Expanded(child: Padding(padding: EdgeInsets.only(right: i < 3 ? 8 : 0), child: _modeChip(modeLabels[i], i))),
         ]),
         const SizedBox(height: 10),
-        Text(tr('Режим подбирает сервер: Авто/Игры — минимальный отклик, Стрим — наименьшая нагрузка, Прив. — самый быстрый узел.'), style: mono(12)),
+        Text(tr('Режим подбирает сервер: Авто — баланс отклика и стабильности, Стрим — устойчивость канала, Игры — минимальный джиттер, Прив. — зарубежный узел.'), style: mono(12)),
         const SizedBox(height: 14),
         _card(child: Row(children: [
           Text(server.flag, style: const TextStyle(fontSize: 24)),

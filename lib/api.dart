@@ -615,6 +615,9 @@ extension ShellApi on ShellState {
   // значения не схлопываются в кэшированный keep-alive. Результаты обновляются построчно.
   /// [silent] — автопроверка сразу после загрузки узлов: молча, без тостов об успехе и о сети.
   /// Без неё весь список стоял бы прочерками, пока человек не догадается нажать «Проверить».
+  /// [onlyTags] — дозамер ТОЛЬКО этого подмножества (фон-цикл автовыбора: просроченные узлы
+  /// с вышедшим бэкоффом). Остальные узлы не трогаем вообще: ни приговоры, ни живые числа —
+  /// экономим время прогона и батарею, а свежие данные у них и так есть.
   ///
   /// Что здесь происходит и почему именно так. Раньше это был TCP-коннект до адреса узла, и
   /// он врал: при глушении интернета порт прямого узла отвечает, а трафик сквозь него не идёт.
@@ -630,13 +633,14 @@ extension ShellApi on ShellState {
   /// сети» выносим только по прямому замеру (conn == 0) — путь пакета при включённом VPN не
   /// совпадает с выключенным состоянием, и переносить его вывод на прямую сеть было бы ложью.
   /// Поэтому при conn != 0 обновляем только живое число сессии (pingMeasured), не приговор.
-  Future<void> _pingServers({bool silent = false}) async {
+  Future<void> _pingServers({bool silent = false, Set<String>? onlyTags}) async {
     if (_pinging) return; // гвард от двойного тапа
     final viaTunnel = conn != 0; // замер при поднятом туннеле: числа есть, приговоры не трогаем
     rebuild(() => _pinging = true);
     var okCount = 0, badCount = 0;
     try {
-      final targets = subNodes.where((n) => n.server.isNotEmpty).toList();
+      var targets = subNodes.where((n) => n.server.isNotEmpty).toList();
+      if (onlyTags != null) targets = targets.where((n) => onlyTags.contains(n.tag)).toList();
       // Без узлов проверять нечего — и это НЕ проблема сети. Раньше пустой список давал
       // «нет связи с интернетом», хотя интернет был, а не было подписки.
       if (targets.isEmpty) {
@@ -654,7 +658,9 @@ extension ShellApi on ShellState {
 
       // Применить итог замера одного узла (общий для быстрого флот-пути и per-node фолбэка):
       // приговор пишем только при прямом замере (conn == 0), сквозь туннель — лишь живое число.
+      // Серия проб в историю узла (бэкофф фон-переспроса, auto_select.dart) — при любом замере.
       void applyOne(SubNode n, int? ms) {
+        (nodeHist[n.tag] ??= NodeHistory()).recordProbe(ms != null);
         if (viaTunnel) {
           // Только живое число сессии: молчащий узел старый ручной замер НЕ стирает —
           // замер сквозь VPN ничего не говорит о прямой доступности.
@@ -705,10 +711,12 @@ extension ShellApi on ShellState {
           },
       ], lanes);
       if (!viaTunnel) await _saveVerdicts();
+      await _saveHistory(); // серии проб для бэкоффа фон-дозамера (auto_select.dart)
 
       // Выбор «лучшего сервера» пересобираем ПОСЛЕ проверки: до неё приговоров не было, и
-      // режим держал бы узел, через который ничего не грузится.
-      if (mounted && bestServer && conn == 0) rebuild(() => server = serverForMode(mode));
+      // режим держал бы узел, через который ничего не грузится. С гистерезисом (_repickBest):
+      // узел, ответивший на пару миллисекунд хуже прошлого «лучшего», не тасует карточку.
+      if (mounted && bestServer && conn == 0) rebuild(_repickBest);
       if (!silent) {
         _toast(viaTunnel
             ? (okCount > 0
@@ -806,6 +814,9 @@ extension ShellApi on ShellState {
       if (sub.ok && sub.nodes.isNotEmpty) {
         rebuild(() => subNotice = null);
         _applyNodes(sub.nodes, cacheAt: sub.cachedAt);
+        // Статистика хаба нужна автовыбору (джиттер/стабильность/мёртвые по хабу) ещё до
+        // первого локального замера: холодный старт сразу упорядочивает узлы по rtt_now.
+        unawaited(_maybeRefreshNodeStats());
         // Один автозамер на сессию: иначе список серверов встречает человека сплошными
         // прочерками, а карточка сервера на Главной — без отклика вовсе.
         if (pingMeasured.isEmpty) _pingServers(silent: true);

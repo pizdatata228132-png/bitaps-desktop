@@ -43,6 +43,7 @@ part 'widgets.dart';     // painters + общие виджеты-строите�
 part 'api.dart';         // сетевые вызовы к edge-функциям + сетевые инструменты
 part 'node_probe.dart';  // приговоры по узлам: что реально пропускает трафик на этой сети
 part 'node_stats.dart';  // публичная статистика доступности нод (спарклайны на «Серверах»)
+part 'auto_select.dart'; // автовыбор сервера: скоринг, гистерезис, история коннектов, бэкофф проб
 part 'screens/home.dart';
 part 'screens/servers.dart';
 
@@ -275,6 +276,13 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
   bool nodeStatsFailed = false;
   bool _statsLoading = false; // re-entrancy-гвард загрузки статистики
   Timer? _statsTimer; // периодическое обновление, пока открыта вкладка «Серверы»
+  Timer? _autoTimer;  // фон-цикл автовыбора: пересчёт лучшего, дозамер просроченных, миграция
+  DateTime? _lastAutoMigrateAt; // анти-маятник мягкой миграции туннеля (auto_select.dart)
+  // Учёт успеха/сбоя сессии для истории узлов: прежнее состояние conn из слушателя _conn,
+  // узел и момент старта текущей сессии (ранний обрыв — это сбой узла, а не «нормально»).
+  int _prevConn = 0;
+  String _sessionNodeId = '';
+  DateTime? _sessionStartedAt;
   Timer? _updTimer;   // проверка обновлений раз в 6 ч по ходу сессии (26.08)
   /// Список узлов сейчас показан ИЗ КЭША (выдача недоступна — сеть в режиме «белых списков»):
   /// дата того успешного ответа. null — свежая выдача из сети. Экран «Серверы» показывает
@@ -317,6 +325,10 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
   /// Приговоры по узлам: пропускает ли узел трафик С ЭТОГО устройства. Заполняет проверка
   /// серверов, живут между запусками (prefs), привязаны к сети — см. node_probe.dart.
   final Map<String, NodeVerdict> nodeVerdicts = {};
+  /// Долгая память по узлам: успехи/сбои коннектов и серии неудачных проб (auto_select.dart).
+  /// Приговор живёт 30 минут и привязан к сети, а история учит автовыбор на неделях: узел,
+  /// систематически рвущий соединение, штрафуется и после истечения свежего приговора.
+  final Map<String, NodeHistory> nodeHist = {};
   /// Отпечаток текущей сети: две первые группы внешнего адреса. Домашний Wi-Fi и мобильный
   /// оператор блокируют по-разному, и приговор с одной сети нельзя показывать на другой.
   String netId = '';
@@ -376,9 +388,10 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
   String hotSwitchTarget = '';
   void toggle() {
     // Режим «лучший сервер»: перед стартом коннекта сами берём оптимальный для текущего режима
-    // сервер (для «Авто»/«Игры» это минимальный пинг — с учётом живых замеров pingOf). Только при
-    // conn==0: конфиг уже идущего подключения не трогаем.
-    if (bestServer && _conn.conn == 0) setState(() => server = serverForMode(mode));
+    // сервер (скоринг auto_select.dart: пинг + джиттер + стабильность + история). Только при
+    // conn==0: конфиг уже идущего подключения не трогаем. Пересчёт — с гистерезисом (_repickBest):
+    // держим текущий выбор, пока кандидат не разительно лучше, иначе карточка «дребезжала» бы.
+    if (bestServer && _conn.conn == 0) setState(_repickBest);
     _conn.toggle();
   }
 
@@ -479,15 +492,18 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
       reconnectOn: () => autoReconnect,
       demoOn: () => demoMode,
       // Узел не пропустил трафик: помечаем его тут же, чтобы он перестал считаться доступным
-      // и не был выбран «лучшим» на следующем подключении.
+      // и не был выбран «лучшим» на следующем подключении. Плюс сбой в долгую историю узла —
+      // автовыбор будет штрафовать его и после того, как свежий приговор истечёт.
       onNodeDead: (tag) {
         if (tag.isEmpty) return;
         rebuild(() {
           nodeVerdicts[tag] = NodeVerdict(ok: false, at: DateTime.now(), net: netId);
           pingMeasured.remove(tag);
+          (nodeHist[tag] ??= NodeHistory()).recordFail();
           if (bestServer) server = serverForMode(mode);
         });
         _saveVerdicts();
+        _saveHistory();
       },
       onToast: _toast,
       onPersist: _save,
@@ -498,6 +514,7 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
     // !_locked: при замке build() отдаёт _lockScreen(), который conn/hms/скорость не читает —
     // посекундный тик таймера сессии не должен впустую перестраивать экран блокировки.
     _conn.addListener(() {
+      _trackSessionOutcome(); // обучение автовыбора: успех/ранний обрыв сессии → nodeHist
       if (mounted && !_locked) {
         setState(() {});
         _syncAnimations();
@@ -536,6 +553,10 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
     _statsTimer = Timer.periodic(const Duration(minutes: 5), (_) {
       if (mounted && tab == 1 && !_locked) _maybeRefreshNodeStats();
     });
+    // Фон-цикл автовыбора (auto_select.dart): пересчёт лучшего с гистерезисом, дозамер
+    // просроченных узлов с бэкоффом, детект смены сети и (десктоп) мягкая миграция
+    // деградировавшего туннеля. Внутри всё привязано к форграунду/состоянию — тик дешёвый.
+    _autoTimer = Timer.periodic(kAutoSelectTick, (_) => _autoTick());
     // Одноразовый пост-фрейм: первичная сверка анимаций после первого кадра (дальше — событийно).
     WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) _syncAnimations(); });
   }
@@ -761,6 +782,7 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
     _onbCtrl.dispose();
     _pinLockTimer?.cancel();
     _statsTimer?.cancel();
+    _autoTimer?.cancel();
     _updTimer?.cancel();
     _conn.dispose();
     _spin.dispose();
@@ -826,6 +848,19 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
             }
           }
         } catch (_) { /* испорченная запись — просто проверим заново */ }
+      }
+      // Долгая история узлов (успехи/сбои коннектов, бэкофф проб) — обучение автовыбора.
+      final hraw = p.getString('nodeHist');
+      if (hraw != null && hraw.isNotEmpty) {
+        try {
+          final m = jsonDecode(hraw);
+          if (m is Map) {
+            for (final e in m.entries) {
+              final h = NodeHistory.fromJson(e.value);
+              if (h != null) nodeHist['${e.key}'] = h;
+            }
+          }
+        } catch (_) { /* испорченная запись — история накопится заново */ }
       }
       bestServer = p.getBool('bestServer') ?? true;
       tgl1 = p.getBool('tgl1') ?? false;
@@ -959,7 +994,7 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
       // 30.08 (владелец): туннель ЖИВ — НЕ реконнектим, а усыновляем. Раньше тут был
       // безусловный toggle(): «закрыл вкладку → открыл — а оно переподключается», хотя VPN
       // и так работал. Теперь интерфейс просто честно показывает текущий туннель.
-      if (bestServer) setState(() => server = serverForMode(mode));
+      if (bestServer) setState(_repickBest);
       _conn.adoptRunningTunnel();
       return true;
     }
@@ -1086,7 +1121,13 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
         final hit = fleet.where((s) => s.id == pending && s.available);
         if (hit.isNotEmpty) { server = hit.first; return; }
       }
-      if (bestServer || !fleet.any((s) => s.id == server.id)) server = serverForMode(mode);
+      if (bestServer) {
+        // Автовыбор — с гистерезисом: новая выдача сама по себе не повод менять показанный
+        // сервер; исчезнувший/заблокированный текущий _repickBest заменит безусловно.
+        _repickBest();
+      } else if (!fleet.any((s) => s.id == server.id)) {
+        server = serverForMode(mode);
+      }
     });
   }
 
@@ -1096,7 +1137,57 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
           // и автоперебор начинали бы с заведомо мёртвых прямых нод.
           cdnFirst: TunnelEngine.instance.lastProfile == NetProfile.restricted);
 
-  // режим реально подбирает сервер: Стрим→мин.нагрузка, Игры/Авто→мин.пинг, Прив→зарубежный (иначе лучший)
+  // ── Скоринг автовыбора (auto_select.dart) ──
+
+  /// Запись /public/stats, соответствующая серверу списка (null — хаб его не меряет: CDN-рельсы).
+  NodeStat? _statFor(Server s) {
+    final n = subNodes.where((x) => x.tag == s.id);
+    if (n.isEmpty) return null;
+    return matchNodeStat(nodeStats?.nodes, server: n.first.server, remark: n.first.remark);
+  }
+
+  /// Взвешенный скор сервера для режима [m]: живой пинг + джиттер/стабильность из серии хаба +
+  /// история коннектов + штрафы (мёртв по хабу, CDN в обычной сети). Меньше = лучше.
+  double _scoreOf(Server s, int m) {
+    final stat = _statFor(s);
+    final rep = nodeStats;
+    final insight = insightOf(stat,
+        nowSec: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        statsAge: rep != null ? DateTime.now().difference(rep.generatedAt.toLocal()) : Duration.zero);
+    return autoScore(
+      pingMs: pingOf(s),
+      jitterMs: insight.jitterMs,
+      stability: insight.stability,
+      statsRtt: stat?.rttNow,
+      statsDead: insight.dead,
+      histPenalty: nodeHist[s.id]?.historyPenalty(DateTime.now()) ?? 0,
+      isCdn: s.proto.startsWith('LTE'),
+      mode: m,
+    );
+  }
+
+  /// Сравнение для автовыбора: ранг приговора сильнее любого скора (мёртвый узел не выиграет
+  /// у живого ни при каких цифрах), в restricted — рельсы вперёд (как cdnFirst в compareServers),
+  /// затем скор; при равенстве — прежний тай-брейк compareServers, чтобы порядок был стабильным.
+  int _scoreCompare(Server a, Server b, int m) {
+    int rank(Server s) => switch (stateOf(s.id)) {
+          NodeState.works => 0,
+          NodeState.unknown => 1,
+          NodeState.blocked => 2,
+        };
+    final ra = rank(a), rb = rank(b);
+    if (ra != rb) return ra.compareTo(rb);
+    if (TunnelEngine.instance.lastProfile == NetProfile.restricted) {
+      final ca = a.proto.startsWith('LTE') ? 0 : 1, cb = b.proto.startsWith('LTE') ? 0 : 1;
+      if (ca != cb) return ca.compareTo(cb);
+    }
+    final sa = _scoreOf(a, m), sb = _scoreOf(b, m);
+    if (sa != sb) return sa.compareTo(sb);
+    return compareServers(a, b, pingOf, stateOf: (s) => stateOf(s.id));
+  }
+
+  // Режим реально подбирает сервер: Стрим→мин.нагрузка/стабильность, Игры→мин.джиттер,
+  // Авто→баланс, Прив→зарубежный прямой (иначе лучший). Выбор — по скору (_scoreCompare).
   Server serverForMode(int m) {
     var avail = fleet.where((s) => s.available).toList();
     if (avail.isEmpty) {
@@ -1108,18 +1199,169 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
       if (avail.isEmpty) return kNoServer;
     }
     // Нагрузку узлов подписка не сообщает (у всех 0) — тогда «Стрим» сортировал список
-    // произвольно. Есть настоящие цифры — сортируем по ним, нет — как везде, по отклику.
+    // произвольно. Есть настоящие цифры — сортируем по ним, нет — по скору (стабильность
+    // серии в нём для Стрима весит больше всего, см. modeWeights).
     if (m == 1 && avail.any((s) => s.load > 0)) {
       avail.sort((a, b) => a.load.compareTo(b.load));
       return avail.first;
     }
     if (m == 3) {
-      final intl = avail.where((s) => s.country != 'Россия').toList();
-      if (intl.isNotEmpty) { intl.sort(_betterServer); return intl.first; }
+      // Приватность: зарубежный узел. Страны у узлов подписки нет (country пуст) — фильтр по
+      // ней был мёртвым кодом со времён выдуманного списка и RU-ноду («Мск · оффлоад») мог
+      // выбрать даже «Прив.». Судим по названию узла — оно и есть страна в выдаче.
+      final intl = avail.where((s) => s.city != 'Россия').toList();
+      if (intl.isNotEmpty) {
+        intl.sort((a, b) => _scoreCompare(a, b, m));
+        return intl.first;
+      }
     }
-    avail.sort(_betterServer);
+    avail.sort((a, b) => _scoreCompare(a, b, m));
     return avail.first;
   }
+
+  /// Пересчитать «лучший» С ГИСТЕРЕЗИСОМ: текущий выбранный сервер держим, пока кандидат не
+  /// лучше его разительно (shouldSwitchBest) — иначе соседние по отклику узлы перетягивали бы
+  /// звание от каждого замера, и карточка сервера «прыгала». Текущий невалиден (исчез из
+  /// выдачи/заблокирован) — переключаемся безусловно. [force] — осознанное действие человека
+  /// (смена режима/включение ползунка): там пересчитываем честно, без удержания.
+  void _repickBest({bool force = false}) {
+    final cand = serverForMode(mode);
+    if (cand.id.isEmpty || cand.id == server.id) return;
+    final curValid = !force &&
+        server.id.isNotEmpty &&
+        fleet.any((s) => s.id == server.id && s.available) &&
+        stateOf(server.id) != NodeState.blocked;
+    if (curValid && !shouldSwitchBest(_scoreOf(server, mode), _scoreOf(cand, mode), curValid: true)) {
+      return; // разница в пределах гистерезиса — держим текущий, карточка не дребезжит
+    }
+    server = cand;
+  }
+
+  /// Обучение автовыбора на фактах сессий (зовётся из слушателя _conn ДО setState-ветки):
+  /// вход в «Подключено» — verify коннекта прошёл, узлу +успех; выход из «Подключено» в
+  /// первую минуту сессии — узел подвёл (ранний обрыв), +сбой. Долгие сессии дополнительного
+  /// успеха не дают: факт «прожил час» уже виден по отсутствию сбоя.
+  void _trackSessionOutcome() {
+    final c = _conn.conn;
+    if (c == 2 && _prevConn != 2) {
+      _sessionNodeId = server.id;
+      _sessionStartedAt = DateTime.now();
+      if (_sessionNodeId.isNotEmpty) {
+        (nodeHist[_sessionNodeId] ??= NodeHistory()).recordOk();
+        _saveHistory();
+      }
+    } else if (c == 0 && _prevConn == 2) {
+      final started = _sessionStartedAt;
+      if (_sessionNodeId.isNotEmpty &&
+          started != null &&
+          DateTime.now().difference(started) < const Duration(minutes: 1)) {
+        (nodeHist[_sessionNodeId] ??= NodeHistory()).recordFail();
+        _saveHistory();
+      }
+      _sessionNodeId = '';
+      _sessionStartedAt = null;
+    }
+    _prevConn = c;
+  }
+
+  /// Сохранить историю узлов. Отдельно от общего _save (тот синхронен с UI и част), как
+  /// _saveVerdicts: запись идёт по событиям сессий/проб, а не на каждый чих интерфейса.
+  Future<void> _saveHistory() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setString('nodeHist',
+          jsonEncode({for (final e in nodeHist.entries) e.key: e.value.toJson()}));
+    } catch (e) {
+      debugPrint('_saveHistory failed: $e');
+    }
+  }
+
+  /// Фон-цикл автовыбора (таймер kAutoSelectTick, initState). Всё тяжёлое привязано к
+  /// условиям: на Android пробуем только в форграунде (батарея), при поднятом туннеле приговоры
+  /// не трогаем, статистика/сеть — с собственными троттлингами внутри.
+  Future<void> _autoTick() async {
+    if (!mounted || _locked) return;
+    // Свежая статистика хаба (джиттер/стабильность/мёртвые узлы для скора). Внутри троттлинг
+    // 5 минут — частых тиков не боится; сбой сети просто оставляет прежний отчёт.
+    unawaited(_maybeRefreshNodeStats());
+    // Смена сети Wi-Fi↔LTE: отпечаток раньше снимался ТОЛЬКО внутри ручного замера, и после
+    // переезда на другую сеть приложение до получаса показывало чужие приговоры. Здесь дешёвый
+    // whoami (6 с): сеть сменилась → приговоры со старой сами перестают быть свежими (stateOf
+    // их отсеивает по net), а рабочий набор перепроверяем дозамером ниже.
+    if (_foreground && conn == 0) {
+      final net = await _networkId();
+      if (!mounted) return;
+      if (net.isNotEmpty && net != netId) {
+        final hadVerdicts = netId.isNotEmpty && nodeVerdicts.isNotEmpty;
+        rebuild(() => netId = net);
+        unawaited(_saveVerdicts()); // сохраняем новый отпечаток рядом со старыми приговорами
+        if (hadVerdicts && bestServer) _repickBest(); // на новой сети расклад может быть иным
+      }
+    }
+    if (!mounted) return;
+    if (conn == 0 && bestServer) {
+      // Дозамер ТОЛЬКО просроченного подмножества и ТОЛЬКО в форграунде: фон-проба поднимает
+      // временный движок на каждый узел — на мобильной сети это заметный расход батареи, а
+      // свернутому приложению свежий пинг всё равно не нужен. Молчащие узлы переспрашиваем
+      // с экспоненциальным бэкоффом (probeDue), узлы со свежим приговором не дёргаем вовсе.
+      final canProbe = _foreground && !_pinging && subNodes.isNotEmpty;
+      if (canProbe) {
+        final now = DateTime.now();
+        final stale = [
+          for (final n in subNodes)
+            if (n.server.isNotEmpty &&
+                stateOf(n.tag) != NodeState.works &&
+                probeDue(nodeHist[n.tag], now))
+              n.tag,
+        ];
+        if (stale.isNotEmpty) unawaited(_pingServers(silent: true, onlyTags: stale.toSet()));
+      }
+      // Пересчёт лучшего по свежим данным (статистика хаба/история могли смениться без замера).
+      if (mounted) rebuild(_repickBest);
+    } else if (conn == 2 && bestServer) {
+      _maybeAutoMigrate();
+    }
+  }
+
+  /// Мягкая миграция деградировавшего туннеля (десктоп, hot-switch без разрыва). Правила —
+  /// в shouldAutoMigrate: только превентивный фейловер с деградировавшего узла на разительно
+  /// лучший, при низком трафике и с анти-маятником. Провал hotSwitch — остаёмся как были.
+  Future<void> _maybeAutoMigrate() async {
+    if (TunnelEngine.kind() != EngineKind.desktopXray || hotSwitching) return;
+    final cur = server;
+    if (cur.id.isEmpty) return;
+    final best = serverForMode(mode);
+    if (best.id.isEmpty || best.id == cur.id) return;
+    final stat = _statFor(cur);
+    final sessionSecs = _sessionStartedAt != null
+        ? DateTime.now().difference(_sessionStartedAt!).inSeconds
+        : 0;
+    final sinceSwitch = _lastAutoMigrateAt != null
+        ? DateTime.now().difference(_lastAutoMigrateAt!).inSeconds
+        : 1 << 30;
+    final yes = shouldAutoMigrate(
+      bestOn: bestServer,
+      desktop: true,
+      curScore: _scoreOf(cur, mode),
+      bestScore: _scoreOf(best, mode),
+      curPingMs: pingOf(cur),
+      curStatsDead: stat != null && !stat.ok,
+      trafficKbps: down + up,
+      sessionSecs: sessionSecs,
+      sinceLastSwitchSecs: sinceSwitch,
+    );
+    if (!yes) return;
+    final okSwitch = await TunnelEngine.instance.hotSwitch(subNodes, best.id);
+    if (!mounted || !okSwitch) return;
+    rebuild(() {
+      server = best; // bestServer НЕ трогаем: это авто-фейловер, а не ручной выбор
+      _lastAutoMigrateAt = DateTime.now();
+    });
+    _toast(appLang == 'en'
+        ? 'Current node degraded — moved to ${tr(best.city)}'
+        : 'Текущий узел деградировал — переключил на ${tr(best.city)}');
+  }
+
 
   // ----- реальные действия -----
   void _toast(String m) {

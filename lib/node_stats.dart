@@ -10,11 +10,12 @@ part of 'main.dart';
 /// Одна нода из публичной статистики.
 class NodeStat {
   final String name;      // «🇫🇮 Финляндия» — как в выдаче подписки
+  final String id;        // IP ноды (как SubNode.server у прямых узлов) — для сопоставления с флотом
   final bool ok;          // жива ли нода по последнему замеру
   final int? rttNow;      // текущий отклик, мс (null — не измерен)
   /// (unix-секунды, мс); ms null/неположительный — нода в этой точке была мертва (разрыв).
   final List<(int, int?)> series;
-  const NodeStat({required this.name, required this.ok, this.rttNow, this.series = const []});
+  const NodeStat({required this.name, this.id = '', required this.ok, this.rttNow, this.series = const []});
 }
 
 /// Весь отчёт: время генерации (для «обновлено N мин назад») + ноды.
@@ -51,6 +52,7 @@ NodeStatsReport? parseNodeStats(String body) {
       }
       nodes.add(NodeStat(
         name: '${n['name'] ?? ''}',
+        id: '${n['id'] ?? ''}',
         ok: n['ok'] == true,
         rttNow: (n['rtt_now'] is num) ? (n['rtt_now'] as num).toInt() : null,
         series: series,
