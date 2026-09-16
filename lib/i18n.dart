@@ -150,6 +150,7 @@ const Map<String, String> _kEn = {
   'Всегда автоматически': 'Always update automatically',
   'Обновление: скачиваю новую сборку…': 'Update: downloading the new build…',
   'Автообновление включено — дальше всё само': 'Auto-update enabled — updates install themselves from now on',
+  'Разреши установку из неизвестных источников — дальше обновления встанут сами': 'Allow installation from unknown sources — updates will install themselves from now on',
   'Переподключение…': 'Reconnecting…',
   'Отключено': 'Disconnected',
   'Подключение…': 'Connecting…',
