@@ -61,7 +61,20 @@ extension ShellApi on ShellState {
       if (Platform.isAndroid) {
         // open_file через FileProvider сам откроет системный установщик APK
         final res = await OpenFile.open(path);
-        if (res.type != ResultType.done) throw Exception(res.message);
+        if (res.type != ResultType.done) {
+          // 15.09: «Permission denied: REQUEST_INSTALL_PACKAGES» — человек ещё не дал нам
+          // установку из неизвестных источников. Ведём его в системную настройку один раз:
+          // после разрешения все следующие обновления ставятся сами.
+          if ((res.message).contains('REQUEST_INSTALL_PACKAGES')) {
+            const ch = MethodChannel('bitaps/system');
+            try {
+              await ch.invokeMethod<bool>('openInstallSettings');
+              _toast(tr('Разреши установку из неизвестных источников — дальше обновления встанут сами'));
+              return; // не падаем в диалог: человек в настройке, вернётся — докрутит сам
+            } catch (_) {/* канала нет (старая нативка) — обычный фолбэк */}
+          }
+          throw Exception(res.message);
+        }
       } else if (Platform.isWindows) {
         await Process.start(path, [], mode: ProcessStartMode.detached);
       } else if (Platform.isMacOS) {

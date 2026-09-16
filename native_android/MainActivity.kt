@@ -45,6 +45,17 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Exception) {
                         result.success(false)
                     }
+                    // 15.09: автообновление APK — системная страница «установка из неизвестных
+                    // источников» для нашего пакета. open_file лишь ПРОВЕРЯЕТ canRequestPackageInstalls
+                    // и молча отказывает — сами ведём человека в настройку один раз.
+                    "openInstallSettings" -> try {
+                        val i = Intent("android.settings.MANAGE_UNKNOWN_APP_SOURCES")
+                        i.data = android.net.Uri.parse("package:$packageName")
+                        startActivity(i)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.success(false)
+                    }
                     "isVpnActive" -> try {
                         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
                         val caps = cm.getNetworkCapabilities(cm.activeNetwork)

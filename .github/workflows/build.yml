@@ -257,6 +257,10 @@ jobs:
         run: |
           perl -0pi -e 's/(<manifest\b[^>]*>)/$1\n    <uses-permission android:name="android.permission.INTERNET"\/>/' android/app/src/main/AndroidManifest.xml
           grep -q "android.permission.INTERNET" android/app/src/main/AndroidManifest.xml && echo "INTERNET ok" || (echo "INTERNET MISSING" && exit 1)
+          # REQUEST_INSTALL_PACKAGES: без него автообновление APK на Android 8+ молча падает
+          # (OpenFile.open получает отказ по разрешению, юзер видит «не обновляется»). 15.09.
+          perl -0pi -e 's/(<manifest\b[^>]*>)/$1\n    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"\/>/ unless /REQUEST_INSTALL_PACKAGES/' android/app/src/main/AndroidManifest.xml
+          grep -q "REQUEST_INSTALL_PACKAGES" android/app/src/main/AndroidManifest.xml && echo "REQUEST_INSTALL_PACKAGES ok" || (echo "REQUEST_INSTALL_PACKAGES MISSING" && exit 1)
           # allowBackup=false: не бэкапить локальную сессию/секреты приложения (flutter_secure_storage + plaintext-фолбэк) через adb/облачный backup
           perl -0pi -e 's/(<application\b)/$1 android:allowBackup="false"/ unless /android:allowBackup/' android/app/src/main/AndroidManifest.xml
           grep -q 'android:allowBackup="false"' android/app/src/main/AndroidManifest.xml && echo "allowBackup ok" || (echo "allowBackup MISSING" && exit 1)
