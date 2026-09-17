@@ -386,13 +386,31 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
   /// список серверов показывает «переключаюсь на …», повторные тапы игнорируются.
   bool hotSwitching = false;
   String hotSwitchTarget = '';
-  void toggle() {
-    // Режим «лучший сервер»: перед стартом коннекта сами берём оптимальный для текущего режима
-    // сервер (скоринг auto_select.dart: пинг + джиттер + стабильность + история). Только при
-    // conn==0: конфиг уже идущего подключения не трогаем. Пересчёт — с гистерезисом (_repickBest):
-    // держим текущий выбор, пока кандидат не разительно лучше, иначе карточка «дребезжала» бы.
-    if (bestServer && _conn.conn == 0) setState(_repickBest);
+  void toggle() async {
+    // Режим «лучший сервер» — по замеру по ТВОЕЙ сети: перед коннектом убеждаемся, что у
+    // лучшего кандидата есть СВЕЖИЙ живой замер (а не просто лучший по статистике хаба).
+    // Свежий есть — коннектим сразу; протух/нет — дозамеряем просроченные узлы и лишь потом идём.
+    if (bestServer && _conn.conn == 0) {
+      await _probeFreshForConnect();
+      setState(_repickBest);
+    }
     _conn.toggle();
+  }
+
+  /// Свежесть живого замера кандидата для коннекта: вердикт ok и моложе 2 минут. Лучший свежий —
+  /// задержки в коннекте нет; иначе дозамеряем просроченных перед стартом (по твоей сети, не хабу).
+  Future<void> _probeFreshForConnect() async {
+    if (!bestServer) return;
+    final now = DateTime.now();
+    const fresh = Duration(minutes: 2);
+    bool freshTag(String tag) {
+      final v = nodeVerdicts[tag];
+      return v != null && v.ok && now.difference(v.at) < fresh;
+    }
+    final cand = serverForMode(mode);
+    if (cand.id.isNotEmpty && freshTag(cand.id)) return;
+    final stale = [for (final n in subNodes) if (n.server.isNotEmpty && !freshTag(n.tag)) n.tag];
+    if (stale.isNotEmpty) await _pingServers(silent: true, onlyTags: stale.toSet());
   }
 
   // Анимации НЕ гоняем безусловно (..repeat()) — это жгло батарею: starfield + шестерёнка + кольца
