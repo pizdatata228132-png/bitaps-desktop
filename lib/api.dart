@@ -271,7 +271,11 @@ extension ShellApi on ShellState {
   Future<void> _login([String? presetKey]) async {
     if (!mounted) return; // _pairLogin может звать после закрытия экрана
     if (_loggingIn) return; // гвард от двойного входа (двойной тап / _pairLogin + ручной)
-    final key = (presetKey ?? _loginCtrl.text).trim();
+    final key = (presetKey ?? _loginCtrl.text)
+        // 18.09 (тикет #9): вставка из Telegram на Windows тащит невидимые символы (zero-width,
+        // переводы строки) — валидация видела «пробелы» и отклоняла валидный код/ключ. Чистим
+        // ввод от пробельных и zero-width символов ПОЛНОСТЬЮ, не только по краям.
+        .replaceAll(RegExp(r'[\s\u200B-\u200F\u2028-\u202F\u2060-\u206F\uFEFF]+'), '');
     if (key.length < 12) {
       _toast(tr('Вставь VPN-ключ или Код входа'));
       return;
