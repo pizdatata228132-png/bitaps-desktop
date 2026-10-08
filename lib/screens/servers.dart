@@ -81,6 +81,30 @@ extension ShellServers on ShellState {
                 style: mono(12, c: C.muted))),
             ]),
           ],
+          // Явное «Обновить список» со временем последнего обновления: pull-to-refresh не все
+          // находят, а «не видит подписку» чинится именно ручным обновлением (жалобы 08.10).
+          if (fleet.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _subVisibleLoading ? null : _loadNodes,
+              child: Row(children: [
+                _subVisibleLoading
+                    ? SizedBox(width: 15, height: 15, child: CircularProgressIndicator(strokeWidth: 2, color: C.accent))
+                    : Icon(Icons.refresh, size: 15, color: C.accent),
+                const SizedBox(width: 6),
+                Flexible(child: Text(
+                  _subVisibleLoading
+                      ? tr('обновляю список серверов…')
+                      : nodesFetchedAt != null
+                          ? (appLang == 'en'
+                              ? 'Refresh server list · updated ${_cacheDate(nodesFetchedAt!)}'
+                              : 'Обновить список серверов · обновлён ${_cacheDate(nodesFetchedAt!)}')
+                          : tr('Обновить список серверов'),
+                  style: mono(12, c: C.muted))),
+              ]),
+            ),
+          ],
           if (locked) ...[
             const SizedBox(height: 16),
             Row(children: [

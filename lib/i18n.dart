@@ -365,6 +365,8 @@ const Map<String, String> _kEn = {
   'Вставь ключ vless://, trojan://, ss://…': 'Paste a vless://, trojan://, ss://… key',
   'Ключ vless://, trojan://, ss://… или ссылка на подписку https://': 'A vless://, trojan://, ss://… key or an https:// subscription link',
   'Подписка добавлена — обновляю серверы…': 'Subscription added — refreshing servers…',
+  'Обновить список серверов': 'Refresh server list',
+  'обновляю список серверов…': 'refreshing server list…',
   'Сохранить': 'Save',
   'Конфиг очищен': 'Config cleared',
   'персонализация': 'personalization',

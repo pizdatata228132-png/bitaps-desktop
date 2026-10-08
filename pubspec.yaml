@@ -41,14 +41,12 @@ dependencies:
   # тот же, что мы собираем для десктопа. Android-часть бесплатна и под MIT.
   flutter_v2ray_client: ^3.4.1
 
-# Заморозка jni на 1.0.0.
-# jni приходит транзитивно (path_provider_android → jni_flutter → jni). В версии 1.0.1 её
-# gradle-скрипт вызывает kotlin { … } на своём модуле, а шаблон Flutter плагин Kotlin
-# подпроектам не подключает — сборка Android падает на «Could not find method kotlin()».
-# От нашего кода это не зависит: чистый проект без единой нашей правки падает так же.
-# Снять, когда jni починят выше по течению (проверяется одной сборкой).
+# Заморозка jni: 1.0.1 ломала Android-сборку («Could not find method kotlin()» на gradle-скрипте
+# пакета), поэтому держали 1.0.0. Но Flutter SDK 3.47.6 подтянул path_provider_android →
+# jni_flutter 1.0.4+1, чьи сгенерированные биндинги требуют jni ^1.1 (const-assert при компиляции).
+# Держим ^1.1.0: в 1.1.x gradle-проблема исправлена апстримом (jni_flutter потому и повысил планку).
 dependency_overrides:
-  jni: 1.0.0
+  jni: ^1.1.0
 
 dev_dependencies:
   flutter_test:
