@@ -195,7 +195,10 @@ class ConnectionController extends ChangeNotifier {
         if (key == kDemoKey) { _fail(gen, tr('Сначала войди или импортируй ключ'), fix: ConnFix.refreshSub); return; }
         // Подписка (https://…/u/<token>) — не одиночный ключ: её надо СКАЧАТЬ и собрать конфиг
         // из всех узлов сразу. Одиночные share-link'и идут прежним путём без изменений.
-        final isSub = isSubscriptionUrl(key);
+        // 08.10: ЛЮБАЯ http(s)-ссылка — тоже подписка (сторонний сервис): скачиваем и разбираем
+        // как список share-link'ов (allowForeign) — раньше такой импорт отвергался «Это не VPN-ключ».
+        final ownSub = isSubscriptionUrl(key);
+        final isSub = ownSub || key.toLowerCase().startsWith('http://') || key.toLowerCase().startsWith('https://');
         // пускаем все схемы, что умеет singbox_config (не только vless://) — иначе валидный
         // trojan/vmess/ss/hysteria2-ключ ложно отвергался бы «Нужен рабочий VPN-ключ».
         if (!isSub && !kSupportedKeySchemes.any((s) => key.toLowerCase().startsWith(s))) { _fail(gen, tr('Нужен рабочий VPN-ключ'), fix: ConnFix.refreshSub); return; }
@@ -203,7 +206,7 @@ class ConnectionController extends ChangeNotifier {
         if (isSub) {
           // Кэшированная выдача: под «белыми списками» origin.bit-core.online мёртв — после
           // сбоя сети молча поднимаем список из кэша (TTL 7 дней, см. fetchSubscriptionCached).
-          final sub = await fetchSubscriptionCached(key, hwid: hwidOf(), deviceOs: Platform.operatingSystem, store: subCacheStore);
+          final sub = await fetchSubscriptionCached(key, hwid: hwidOf(), deviceOs: Platform.operatingSystem, store: subCacheStore, allowForeign: !ownSub);
           if (_disposed || gen != _gen) return; // отменили, пока грузилась подписка
           // Сервис отвечает уведомлением вместо узлов: подписка истекла / исчерпан лимит устройств.
           // Показываем его текст как есть — он уже написан для пользователя и локализован сервисом.

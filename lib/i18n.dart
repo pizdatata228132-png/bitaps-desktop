@@ -363,6 +363,8 @@ const Map<String, String> _kEn = {
   'Свой конфиг': 'Custom config',
   'Свой конфиг ✓': 'Custom config ✓',
   'Вставь ключ vless://, trojan://, ss://…': 'Paste a vless://, trojan://, ss://… key',
+  'Ключ vless://, trojan://, ss://… или ссылка на подписку https://': 'A vless://, trojan://, ss://… key or an https:// subscription link',
+  'Подписка добавлена — обновляю серверы…': 'Subscription added — refreshing servers…',
   'Сохранить': 'Save',
   'Конфиг очищен': 'Config cleared',
   'персонализация': 'personalization',

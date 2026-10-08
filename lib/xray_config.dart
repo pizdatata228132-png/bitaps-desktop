@@ -11,7 +11,7 @@
 
 import 'dart:convert';
 
-import 'singbox_config.dart' show SubNode, outboundFromKey;
+import 'singbox_config.dart' show SubNode, SubParseResult, outboundFromKey, kSupportedKeySchemes, kSubMaxNodes;
 
 /// Локальный вход, который поднимает движок: в него ходит системный прокси/tun2socks.
 const int kXraySocksPort = 10808;
@@ -403,6 +403,72 @@ SubNode? subNodeFromKey(String key, {String remark = 'Мой ключ'}) {
     xray: xray ?? const <String, dynamic>{},
     singbox: singbox,
   );
+}
+
+/// Подписка «списком ссылок» — формат почти всех сторонних сервисов: base64-блоб ИЛИ plain
+/// text со строками vless:// vmess:// ss:// trojan://… (по одной на узел, имя — в #фрагменте).
+/// Чужие хосты здесь НЕ гейтятся trusted-host'ом: сюда попадает только подписка, которую
+/// пользователь импортировал ЯВНО (подтверждение _confirmForeignHost в UI), — иначе отрезалась
+/// бы вся сторонняя выдача. Своя (bitaps) выдача идёт строгим путём parseSubscription.
+SubParseResult parseLinksSubscription(String body, {String? headerNotice}) {
+  var text = body.trim();
+  // Сплошная строка без схем — кандидат в base64-блоб (классическая выдача V2Ray/Happ-сервисов).
+  if (!text.contains('\n') && !text.contains('://')) {
+    try {
+      text = utf8.decode(base64.decode(_b64pad(text)));
+    } catch (_) {/* не base64 — разбираем как есть */}
+  }
+  final nodes = <SubNode>[];
+  final usedTags = <String>{};
+  var skipped = 0;
+  for (final raw in text.split(RegExp(r'\r?\n'))) {
+    final line = raw.trim();
+    if (line.isEmpty) continue;
+    if (!kSupportedKeySchemes.any((s) => line.toLowerCase().startsWith(s))) {
+      skipped++; // не share-link (комментарий, html ошибки, заголовок) — считаем, но не роняем разбор
+      continue;
+    }
+    if (nodes.length >= kSubMaxNodes) {
+      skipped++;
+      continue;
+    }
+    // Имя узла — из #фрагмента (percent-decode с фолбэком, как в основном парсере).
+    var remark = '';
+    final hash = line.lastIndexOf('#');
+    if (hash >= 0 && hash + 1 < line.length) {
+      final frag = line.substring(hash + 1);
+      try {
+        remark = Uri.decodeComponent(frag).trim();
+      } catch (_) {
+        remark = frag.trim();
+      }
+    }
+    final n = subNodeFromKey(line, remark: remark.isEmpty ? 'узел ${nodes.length + 1}' : remark);
+    if (n == null) {
+      skipped++; // схема знакома, но разобрать не вышло (битый ключ, Reality без pbk)
+      continue;
+    }
+    var tag = n.remark;
+    if (usedTags.contains(tag)) {
+      var i = 2;
+      while (usedTags.contains('$tag $i')) {
+        i++;
+      }
+      tag = '$tag $i';
+    }
+    usedTags.add(tag);
+    if (n.singbox != null) n.singbox!['tag'] = tag;
+    nodes.add(SubNode(remark: n.remark, tag: tag, server: n.server, port: n.port, xray: n.xray, singbox: n.singbox));
+  }
+  return SubParseResult(nodes: nodes, notice: headerNotice, skipped: skipped);
+}
+
+String _b64pad(String s) {
+  var out = s.replaceAll('-', '+').replaceAll('_', '/').replaceAll(RegExp(r'\s'), '');
+  while (out.length % 4 != 0) {
+    out += '=';
+  }
+  return out;
 }
 
 /// share-link → outbound в формате xray. Поддержаны схемы, которые реально выдаёт наш сервис

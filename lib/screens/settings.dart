@@ -136,8 +136,8 @@ extension ShellSettings on ShellState {
           autofocus: true, // фокус сразу в поле — Cmd+V вставляет ключ без предварительного клика
           style: mono(12, c: C.text),
           cursorColor: C.accent,
-          // хинт перечисляет схемы честно: принимаются все kSupportedKeySchemes, не только vless
-          decoration: InputDecoration(hintText: tr('Вставь ключ vless://, trojan://, ss://…'), hintMaxLines: 2, hintStyle: mono(12, c: C.muted)),
+          // хинт честный: принимаются все kSupportedKeySchemes И ссылка-подписка стороннего сервиса
+          decoration: InputDecoration(hintText: tr('Ключ vless://, trojan://, ss://… или ссылка на подписку https://'), hintMaxLines: 2, hintStyle: mono(12, c: C.muted)),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: Text(tr('Отмена'), style: mono(13, c: C.muted))),
@@ -145,6 +145,11 @@ extension ShellSettings on ShellState {
             onPressed: () async {
               final t = ctrl.text.trim();
               Navigator.pop(context);
+              // Ссылка на подписку (своя или сторонняя) — тем же ядром, что вставка из буфера:
+              // для сторонней спросит подтверждение хоста и покажет серверы списком (08.10).
+              if (isSubscriptionUrl(t) || t.toLowerCase().startsWith('http://') || t.toLowerCase().startsWith('https://')) {
+                if (t.isNotEmpty) { await _importKeyString(t); return; }
+              }
               if (kSupportedKeySchemes.any((s) => t.toLowerCase().startsWith(s))) {
                 // ТОТ ЖE trusted-host гейт, что и в _importKey: без него «вставь это в Свой конфиг»
                 // обходил защиту и при kRealTunnel=true трафик молча ушёл бы на хост атакующего.
@@ -171,8 +176,8 @@ extension ShellSettings on ShellState {
                 // раньше любой текст «сохранялся» в customCfg с зелёным тостом, но customCfg нигде не
                 // читается → фича была мёртвой. Не врём об успехе: честно отклоняем неподдержанный формат.
                 _toast(appLang == 'en'
-                    ? 'Need a vless:// key (or trojan/vmess/ss/hysteria2). Other formats are not supported.'
-                    : 'Нужен ключ vless:// (или trojan/vmess/ss/hysteria2). Другой формат не поддерживается.');
+                    ? 'Need a vless:// key (or trojan/vmess/ss/hysteria2) or an https:// subscription link.'
+                    : 'Нужен ключ vless:// (или trojan/vmess/ss/hysteria2) или ссылка-подписка https://');
               }
             },
             child: Text(tr('Сохранить'), style: mono(13, c: C.accent)),
@@ -252,7 +257,9 @@ extension ShellSettings on ShellState {
             _divider(),
             _navRow(Icons.shield, tr('Проверка утечек'), _leakCheck),
             _divider(),
-            _navRow(Icons.upload_file, customCfg == null ? tr('Свой конфиг') : tr('Свой конфиг ✓'), _customConfig),
+            _navRow(Icons.upload_file,
+                (customCfg == null && importedHost == null) ? tr('Свой конфиг') : tr('Свой конфиг ✓'),
+                _customConfig),
             _divider(),
             // 🩺 самодиагностика — локальный чек аккаунта/подписки/ключа из app-sub (без сети)
             _navRow(Icons.health_and_safety_outlined, tr('Проверить мой доступ'), _selfDiagnose),

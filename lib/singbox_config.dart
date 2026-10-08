@@ -12,6 +12,8 @@ import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
+import 'xray_config.dart' show parseLinksSubscription;
+
 // models.dart — part of main.dart и напрямую не импортируется; BUILD_NUMBER — compile-time
 // dart-define, значение совпадает при сборке (источник истины — models.dart:kBuildNumber).
 const int _kBuildNumber = int.fromEnvironment('BUILD_NUMBER', defaultValue: 0);
@@ -562,10 +564,25 @@ class SubParseResult {
 /// Протоколы xray-записей, которые мы вообще рассматриваем как узел.
 const List<String> _kSubProxyProtocols = ['vless', 'vmess', 'trojan', 'shadowsocks'];
 
-/// Разобрать тело подписки. Бросает [FormatException], если это вообще не массив JSON.
-SubParseResult parseSubscription(String body, {String? headerNotice}) {
-  final dynamic decoded = json.decode(body);
+/// Разобрать тело подписки. Бросает [FormatException], если это вообще не массив JSON
+/// и не список share-link'ов (см. fallback ниже).
+/// [allowForeign]: подписка импортирована пользователем ЯВНО из стороннего сервиса — узлы
+/// с чужих хостов не отбрасываем гейтом доверия (гейт защищает от подмены в НАШЕЙ выдаче;
+/// здесь чужие хосты — само содержимое). Гейт сохраняет своя (bitaps) выдача: allowForeign=false.
+SubParseResult parseSubscription(String body, {String? headerNotice, bool allowForeign = false}) {
+  dynamic decoded;
+  try {
+    decoded = json.decode(body);
+  } catch (_) {
+    decoded = null;
+  }
   if (decoded is! List) {
+    // Не xray-JSON — значит почти наверняка сторонняя выдача списком ссылок (base64/plain).
+    // Импортируем её тем же результатом SubParseResult, но только если это ЯВНО сторонний
+    // импорт: для своей выдачи не-JSON — повод честно сказать «подписка повреждена».
+    if (allowForeign) {
+      return parseLinksSubscription(body, headerNotice: headerNotice);
+    }
     throw const FormatException('подписка: ожидался JSON-массив конфигов');
   }
   final nodes = <SubNode>[];
@@ -601,7 +618,8 @@ SubParseResult parseSubscription(String body, {String? headerNotice}) {
     // роутинг гонит всё через node-*), то есть MITM туннеля. Гейт двойной: доверенный домен
     // ИЛИ точный IP боевой ноды (kTrustedNodeIps — выдача отдаёт прямые ноды сырыми IP).
     // Отброшенные честно считаем — пользователю видно, что часть выдачи отрезана.
-    if (!isTrustedNodeHost(host.$1)) {
+    // allowForeign (явный импорт сторонней подписки): гейт не применяем — чужие хосты там норма.
+    if (!allowForeign && !isTrustedNodeHost(host.$1)) {
       skipped++;
       continue;
     }
@@ -718,6 +736,7 @@ Future<SubFetchResult> fetchSubscription(
   String deviceModel = '',
   http.Client? client,
   Duration timeout = const Duration(seconds: 20),
+  bool allowForeign = false, // явный импорт сторонней подписки: без trusted-гейта, фолбэк на список ссылок
 }) async {
   final ownClient = client == null;
   final c = client ?? http.Client();
@@ -761,6 +780,7 @@ Future<SubFetchResult> fetchSubscription(
     final parsed = parseSubscription(
       body,
       headerNotice: _decodeSubHeader(r.headers['sub-info-text'] ?? r.headers['announce']),
+      allowForeign: allowForeign,
     );
     return SubFetchResult(
       nodes: parsed.nodes,
@@ -840,9 +860,10 @@ Future<SubFetchResult> fetchSubscriptionCached(
   http.Client? client,
   Duration timeout = const Duration(seconds: 20),
   SubCacheStore? store, // null — кэш не работает, поведение как у голого fetchSubscription
+  bool allowForeign = false,
 }) async {
   final sub =
-      await fetchSubscription(url, hwid: hwid, deviceOs: deviceOs, deviceModel: deviceModel, client: client, timeout: timeout);
+      await fetchSubscription(url, hwid: hwid, deviceOs: deviceOs, deviceModel: deviceModel, client: client, timeout: timeout, allowForeign: allowForeign);
   if (sub.ok && sub.rawBody != null) {
     try {
       await store?.write(subCacheEncode(url, sub.rawBody!, DateTime.now()));
@@ -859,7 +880,7 @@ Future<SubFetchResult> fetchSubscriptionCached(
   final cached = subCacheDecode(raw, url);
   if (cached == null) return sub; // кэша нет/протух — честная ошибка, как раньше
   try {
-    final parsed = parseSubscription(cached.body);
+    final parsed = parseSubscription(cached.body, allowForeign: allowForeign);
     if (parsed.nodes.isEmpty) return sub;
     return SubFetchResult(
         nodes: parsed.nodes, notice: parsed.notice, skipped: parsed.skipped, cachedAt: cached.at);

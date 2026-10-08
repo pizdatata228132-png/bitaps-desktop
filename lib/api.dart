@@ -816,9 +816,14 @@ extension ShellApi on ShellState {
   /// Идентификатор устройства тот же, что при подключении, — лишний слот не занимаем.
   Future<void> _loadNodes() async {
     final key = keyStr.trim();
-    if (!isSubscriptionUrl(key) || hwid.isEmpty) return;
+    // Своя выдача — строгий путь; сторонняя http(s)-подписка (явный импорт, importedHost != null)
+    // — тот же показ в списке серверов, но разбором списка ссылок без trusted-гейта (08.10).
+    final ownSub = isSubscriptionUrl(key);
+    final foreignSub = !ownSub && importedHost != null &&
+        (key.toLowerCase().startsWith('http://') || key.toLowerCase().startsWith('https://'));
+    if ((!ownSub && !foreignSub) || hwid.isEmpty) return;
     try {
-      final sub = await fetchSubscriptionCached(key, hwid: hwid, deviceOs: Platform.operatingSystem, deviceModel: await _deviceModel(), store: subCacheStore);
+      final sub = await fetchSubscriptionCached(key, hwid: hwid, deviceOs: Platform.operatingSystem, deviceModel: await _deviceModel(), store: subCacheStore, allowForeign: foreignSub);
       if (!mounted) return;
       // Отметка свежести — только по успешному ответу сервиса ИЗ СЕТИ: открытие «Серверов» гоняет
       // fetch не чаще раза в 5 минут (см. _maybeRefreshNodes), а сбой/кэш не должен его откладывать —

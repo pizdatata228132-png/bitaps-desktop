@@ -42,6 +42,26 @@ extension ShellAccount on ShellState {
       }
       return;
     }
+    // Сторонняя подписка по http(s)-ссылке (НЕ bitaps): скачивается как подписка при обновлении
+    // списка и при подключении (fetchSubscriptionCached allowForeign). Раньше такая ссылка
+    // отвергалась «Это не VPN-ключ» — сторонний сервис добавить было невозможно вообще (08.10).
+    if (t.toLowerCase().startsWith('http://') || t.toLowerCase().startsWith('https://')) {
+      final host = _hostOf(t);
+      final ok = await _confirmForeignHost(host ?? tr('неизвестный хост'));
+      if (ok != true) return;
+      if (!mounted) return;
+      rebuild(() {
+        keyStr = t;
+        // sentinel '?' — как у чужого ключа выше: маркер «есть ручной импорт», чтобы авто-рефреш
+        // аккаунта не перетёр его молча (гард importedHost==null в _applySub).
+        importedHost = host ?? '?';
+        customCfg = null;
+      });
+      _save();
+      _toast(appLang == 'en' ? 'Subscription added — refreshing servers…' : 'Подписка добавлена — обновляю серверы…');
+      await _loadNodes(); // показать её серверы в списке сразу, а не только при коннекте
+      return;
+    }
     // Иначе принимаем только сам VPN-ключ (любая схема из kSupportedKeySchemes — как гард
     // коннекта и «Свой конфиг»). Прочие http(s)-ссылки не принимаем: раньше такая ссылка молча
     // сохранялась как ключ и коннект падал.
