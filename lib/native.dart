@@ -241,8 +241,12 @@ extension ShellNative on ShellState {
       }
       await hotKeyManager.register(hk, keyDownHandler: (_) {
         if (!mounted) return;
+        // Направление читаем ДО toggle: conn==2/1 — «размыкаем», иначе «подключаем».
+        // Раньше стояло наоборот (conn==0 → «Отключаю…») + с пре-замером toggle асинхронен,
+        // и чтение conn после него врёт в обоих дефолтных путях (аудит UX 09.10).
+        final wasActive = conn != 0 || preProbing;
         toggle(); // тот же ConnectionController.toggle, что у большой кнопки
-        _toast(conn == 0
+        _toast(wasActive
             ? tr('Отключаю…')
             : (gEngineReal || TunnelEngine.kind() != EngineKind.none ? tr('Подключаю…') : tr('Демо-подключение…')));
       });

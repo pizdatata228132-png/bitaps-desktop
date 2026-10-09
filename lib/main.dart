@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform, File, Directory, Process, ProcessStartMode, exit, stderr;
+import 'dart:io' show Platform, File, Directory, Process, ProcessStartMode, Socket, exit, stderr;
 import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flutter/material.dart';
@@ -333,6 +333,10 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
   /// оператор блокируют по-разному, и приговор с одной сети нельзя показывать на другой.
   String netId = '';
   bool _pinging = false; // идёт замер пинга — гвард от двойного запуска
+  /// Идёт пре-замер перед коннектом (toggle, режим «лучший сервер»): Главная показывает
+  /// «Проверяем серверы…» вместо молчащей кнопки; второй тап в это время — отмена.
+  bool preProbing = false;
+  bool _preProbeCancel = false;
   /// Прогресс замера «Проверить серверы»: сколько узлов уже проверено и сколько всего
   /// (показывается на кнопке «готово X из Y» — иначе параллельный замер флота выглядел бы
   /// зависшим на ~10 секунд).
@@ -390,9 +394,21 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
     // Режим «лучший сервер» — по замеру по ТВОЕЙ сети: перед коннектом убеждаемся, что у
     // лучшего кандидата есть СВЕЖИЙ живой замер (а не просто лучший по статистике хаба).
     // Свежий есть — коннектим сразу; протух/нет — дозамеряем просроченные узлы и лишь потом идём.
+    // Аудит UX 09.10: пре-замер был невидим (кнопка «в покое» 10-26 с) — показываем статус
+    // «Проверяем серверы…»; второй тап в это время = ОТМЕНА (а не гонка, отменявшая свой же
+    // коннект: оба toggle доходили до _conn.toggle, и первый читал conn==1 как «отменить»).
+    if (preProbing) { _preProbeCancel = true; return; }
     if (bestServer && _conn.conn == 0) {
-      await _probeFreshForConnect();
-      setState(_repickBest);
+      _preProbeCancel = false;
+      setState(() => preProbing = true);
+      try {
+        await _probeFreshForConnect();
+        if (!mounted) return;
+        if (_preProbeCancel || _conn.conn != 0) return; // отменили или состояние сменилось под нами
+        setState(_repickBest);
+      } finally {
+        if (mounted) setState(() => preProbing = false); else preProbing = false;
+      }
     }
     _conn.toggle();
   }
@@ -409,7 +425,11 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
     }
     final cand = serverForMode(mode);
     if (cand.id.isNotEmpty && freshTag(cand.id)) return;
-    final stale = [for (final n in subNodes) if (n.server.isNotEmpty && !freshTag(n.tag)) n.tag];
+    // Кап: просроченных может быть весь парк (19+ записей), а перед коннектом важны только
+    // верхние кандидаты — выдача УЖЕ упорядочена сервисом по живости/нагрузке, поэтому первые
+    // шесть просроченных покрывают реальный выбор (аудит UX 09.10: полный прогон держал
+    // кнопку молчащей до ~26 с).
+    final stale = [for (final n in subNodes) if (n.server.isNotEmpty && !freshTag(n.tag)) n.tag].take(6).toList();
     if (stale.isNotEmpty) await _pingServers(silent: true, onlyTags: stale.toSet());
   }
 
@@ -1585,11 +1605,17 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
         _hotSwitch(s);
         return;
       }
-      _toast(tr('Отключись, чтобы сменить сервер'));
+      _toast(conn == 1
+          ? tr('Подключение ещё идёт — подожди или отмени на Главной')
+          : tr('Отключись, чтобы сменить сервер'));
       return;
     }
     if (!s.available) {
-      _toast(appLang == 'en' ? '${tr(s.city)} — soon' : '${tr(s.city)} — скоро');
+      // Бейдж строки уже говорит «не работает» — тост обязан согласоваться, «скоро» читалось
+      // как «появится позже» и вводило в ложное ожидание (аудит UX 09.10).
+      _toast(appLang == 'en'
+          ? '${tr(s.city)} is not passing traffic right now — pick another'
+          : '${tr(s.city)} — сейчас не пропускает трафик, выбери другой');
       return;
     }
     // Выбор конкретного сервера выключает режим «лучший сервер» (ползунок на Главной) —

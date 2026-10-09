@@ -5,8 +5,15 @@ part of 'main.dart';
 enum ConnFix {
   /// Действия нет — достаточно объяснения (например, повторить попытку).
   none,
-  /// Обновить подписку: истекла, занят лимит устройств, узлов не пришло.
+  /// Обновить подписку: узлов не пришло, странный ответ сервиса выдачи.
   refreshSub,
+  /// Подписка истекла → пейвол продления (главный коммерческий сценарий отказа — не петля «обнови»).
+  renew,
+  /// Нужно действие в аккаунте: войти (гость) или освободить слот устройства (лимит) → Кабинет.
+  account,
+  /// Просто повторить попытку тем же нажатием: таймаут, отказ в VPN-разрешении, отменённый
+  /// системный запрос пароля на macOS.
+  retry,
   /// Отдать ключ стороннему клиенту Happ — он умеет то, что не умеет наш движок.
   happ,
   /// Сами не починим — довести человека до поддержки.
@@ -192,7 +199,7 @@ class ConnectionController extends ChangeNotifier {
         final key = keyOf().trim();
         // Демо-заглушка — НЕ ключ: синтаксически она валидна (vless://…), но pbk у неё
         // ненастоящий, и без этого гарда коннект умирал бы невнятной ошибкой движка.
-        if (key == kDemoKey) { _fail(gen, tr('Сначала войди или импортируй ключ'), fix: ConnFix.refreshSub); return; }
+        if (key == kDemoKey) { _fail(gen, tr('Сначала войди или импортируй ключ'), fix: ConnFix.account); return; }
         // Подписка (https://…/u/<token>) — не одиночный ключ: её надо СКАЧАТЬ и собрать конфиг
         // из всех узлов сразу. Одиночные share-link'и идут прежним путём без изменений.
         // 08.10: ЛЮБАЯ http(s)-ссылка — тоже подписка (сторонний сервис): скачиваем и разбираем
@@ -210,7 +217,18 @@ class ConnectionController extends ChangeNotifier {
           if (_disposed || gen != _gen) return; // отменили, пока грузилась подписка
           // Сервис отвечает уведомлением вместо узлов: подписка истекла / исчерпан лимит устройств.
           // Показываем его текст как есть — он уже написан для пользователя и локализован сервисом.
-          if (sub.notice != null && !sub.ok) { _fail(gen, sub.notice!, fix: ConnFix.refreshSub); return; }
+          if (sub.notice != null && !sub.ok) {
+            // Уведомление сервиса маршрутизируем по смыслу: истёкшая подписка → продление,
+            // лимит устройств → Кабинет. Иначе кнопка «Обновить подписку» была бесконечной
+            // петлей с тем же отказом (аудит UX 09.10).
+            final n = sub.notice!.toLowerCase();
+            final fix = n.contains('истек')
+                ? ConnFix.renew
+                : (n.contains('лимит') || n.contains('устройств'))
+                    ? ConnFix.account
+                    : ConnFix.refreshSub;
+            _fail(gen, sub.notice!, fix: fix); return;
+          }
           if (sub.error != null) { _fail(gen, sub.error!, fix: ConnFix.refreshSub); return; }
           onNodes(sub.nodes, cacheAt: sub.cachedAt);
           nodes = TunnelEngine.usableNodes(sub.nodes);
@@ -245,8 +263,8 @@ class ConnectionController extends ChangeNotifier {
         if (!await TunnelEngine.instance.ensurePermission()) {
           if (_disposed || gen != _gen) return;
           _fail(gen, appLang == 'en'
-              ? 'VPN permission is required to connect'
-              : 'Нужно разрешить приложению создавать VPN-подключение', fix: ConnFix.none);
+              ? 'VPN permission is required — tap again and allow it'
+              : 'Нужно разрешить приложению создавать VPN-подключение — нажми ещё раз и разреши', fix: ConnFix.retry);
           return;
         }
         if (_disposed || gen != _gen) return; // отменили, пока человек читал диалог
@@ -264,6 +282,25 @@ class ConnectionController extends ChangeNotifier {
         final restricted = nodes.length > 1 &&
             await TunnelEngine.instance.preflight(nodes) == NetProfile.restricted;
         if (_disposed || gen != _gen) return; // отменили, пока шёл пре-флайт
+        // Дешёвая проверка «есть ли вообще интернет» ДО перебора (аудит UX 09.10): в мёртвой
+        // сети перебор жёг минуты и заканчивался тем же «проверь интернет». Живой TCP хотя бы
+        // до одного узла выдачи достаточен: в режиме «белых списков» отвечают рельсы/SS, а
+        // молчание всех = нет сети, это не вопрос выбора сервера.
+        if (nodes.length > 1) {
+          final addrs = <String>{};
+          for (final n in nodes) {
+            if (n.server.isNotEmpty) addrs.add('${n.server}:${n.port}');
+            if (addrs.length >= 4) break;
+          }
+          final alive = await Future.wait([for (final a in addrs) _tcpAlive(a)]);
+          if (_disposed || gen != _gen) return;
+          if (!alive.any((x) => x)) {
+            _fail(gen, appLang == 'en'
+                ? 'No internet connection — check your network and try again'
+                : 'Нет интернета — проверь соединение и попробуй снова', fix: ConnFix.retry);
+            return;
+          }
+        }
         final roam = bestServerOn();
         var candidate = serverOf();
         // 30.08: приговоры «недоступен» режут кандидатов из выбора — при всех мёртвых
@@ -297,13 +334,26 @@ class ConnectionController extends ChangeNotifier {
                          keepProxy: blocked)
                 .timeout(const Duration(seconds: 40));
           } on TunnelUnavailable catch (e) {
-            // Нет разрешения на VPN-подключение: чинится повторной попыткой и «разрешить» в системе.
-            _resetTry(); _fail(gen, '$e', fix: ConnFix.none);
+            // Два разных случая под одним типом: нет VPN-разрешения (чинится повтором и
+            // «разрешить» в системе) vs движка нет в сборке (iOS — туда Happ).
+            final m = '$e';
+            final noEngine = m.contains('не установлен') || m.contains('not installed');
+            _resetTry(); _fail(gen, m, fix: noEngine ? ConnFix.happ : ConnFix.retry);
             return;
           } on EngineUnavailable catch (e) {
+            // Отмена системного запроса пароля на macOS (прокси не встал) — это НЕ отказ движка:
+            // человек просто нажал «Отмена». Ведём на повтор, а не в Happ.
+            final m = '$e';
+            if (m.contains('системный прокси') || m.contains('system proxy')) {
+              _resetTry(); _fail(gen, appLang == 'en'
+                  ? 'macOS asked for the admin password to set the system proxy — tap again and enter it'
+                  : 'macOS спросила пароль администратора для системного прокси — нажми ещё раз и введи его',
+                  fix: ConnFix.retry);
+              return;
+            }
             // Проблема самого движка (нет бинаря, занят порт) — Happ поднимет тот же ключ мимо него.
             // К узлу это отношения не имеет — перебирать кандидатов бессмысленно.
-            _resetTry(); _fail(gen, '$e', fix: ConnFix.happ);
+            _resetTry(); _fail(gen, m, fix: ConnFix.happ);
             return;
           } on TimeoutException {
             // Движок мог подняться уже ПОСЛЕ таймаута — тогда останется «осиротевший» туннель:
@@ -318,7 +368,7 @@ class ConnectionController extends ChangeNotifier {
               if (_disposed || gen != _gen || conn != 0) return;
               _stopEngine().catchError((_) {});
             });
-            _resetTry(); _fail(gen, appLang == 'en' ? 'Connection timed out' : 'Подключение не удалось — таймаут', fix: ConnFix.none);
+            _resetTry(); _fail(gen, appLang == 'en' ? 'Connection timed out — tap to try again' : 'Подключение не удалось — таймаут. Нажми ещё раз', fix: ConnFix.retry);
             return;
           } catch (e) {
             _resetTry(); _fail(gen, appLang == 'en' ? 'Failed to connect: $e' : 'Не удалось подключиться: $e');
@@ -618,6 +668,20 @@ class ConnectionController extends ChangeNotifier {
   // заблокирован» было бы ложью. Вынесено в чистую функцию: правило покрыто killswitch_test.
   static bool holdProxyOnDrop(bool killSwitch, EngineKind kind) =>
       killSwitch && kind == EngineKind.desktopXray;
+
+  /// Жив ли TCP до host:port (быстрый стоп-вал перед перебором кандидатов в мёртвой сети).
+  static Future<bool> _tcpAlive(String hostPort) async {
+    final i = hostPort.lastIndexOf(':');
+    if (i <= 0) return false;
+    try {
+      final s = await Socket.connect(hostPort.substring(0, i), int.tryParse(hostPort.substring(i + 1)) ?? 443,
+          timeout: const Duration(milliseconds: 2500));
+      s.destroy();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 
   // Пауза перед [attempt]-й попыткой автопереподключения (нумерация с 1): 2с, 5с, 15с, 30с,
   // дальше каждые 60с — бессрочно, пока не подключимся или человек не отменит серию.

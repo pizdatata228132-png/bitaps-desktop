@@ -115,7 +115,9 @@ extension ShellServers on ShellState {
                     ? (appLang == 'en'
                         ? 'Switching to ${tr(hotSwitchTarget)}…'
                         : 'Переключаюсь на ${tr(hotSwitchTarget)}…')
-                    : tr('Отключись, чтобы сменить сервер'),
+                    : conn == 1
+                        ? tr('Подключение ещё идёт — подожди или отмени на Главной')
+                        : tr('Отключись, чтобы сменить сервер'),
                 style: mono(12))),
             ]),
           ] else if (conn == 2 && TunnelEngine.kind() == EngineKind.desktopXray) ...[

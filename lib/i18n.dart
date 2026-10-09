@@ -469,6 +469,17 @@ const Map<String, String> _kEn = {
 
   // ---- paywall.dart ----
   'Продлить подписку': 'Renew subscription',
+  // Пакет UX 09.10 (поток «не коннектит»)
+  'Проверяем серверы…': 'Checking servers…',
+  'ищем живой сервер по твоей сети — ещё тап = отмена': 'finding a live server on your network — tap again to cancel',
+  'Отменить подключение': 'Cancel connection',
+  'Открыть кабинет': 'Open account',
+  'Повторить': 'Try again',
+  'Инструкция Happ': 'Happ guide',
+  'Нужно разрешить приложению создавать VPN-подключение — нажми ещё раз и разреши': 'The app needs permission to create a VPN connection — tap again and allow it',
+  'macOS спросила пароль администратора для системного прокси — нажми ещё раз и введи его': 'macOS asked for the admin password for the system proxy — tap again and enter it',
+  'Нет интернета — проверь соединение и попробуй снова': 'No internet connection — check your network and try again',
+  'Подключение ещё идёт — подожди или отмени на Главной': 'Still connecting — wait or cancel on the Home tab',
   'тарифы': 'plans',
   'устройства': 'devices',
   '+50 ₽/мес за каждое доп-устройство · максимум 10': '+50 ₽/mo per extra device · 10 max',

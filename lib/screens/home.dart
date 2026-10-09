@@ -45,19 +45,22 @@ extension ShellHome on ShellState {
           // остаётся true всю попытку (см. toggle в connection.dart), и без этого приоритета
           // человек не видел бы, что подключение вообще идёт. «Переподключение…» в ожидании
           // таймера — тоже важнее блокировки: карточка килл-свитча при этом остаётся на месте.
-          conn == 1 ? tr('Подключение…')
+          preProbing ? tr('Проверяем серверы…')
+              : conn == 1 ? tr('Подключение…')
               : reconnecting ? tr('Переподключение…')
               : connBlocked ? tr('Трафик заблокирован')
               : conn == 0 ? tr('Отключено')
               : (gEngineReal ? tr('Подключено') : tr('Демо-режим')),
-          style: disp(22, w: FontWeight.w700, c: connected ? C.accent : (conn == 1 || reconnecting || connBlocked ? C.warn : C.text)))),
+          style: disp(22, w: FontWeight.w700, c: connected ? C.accent : (conn == 1 || reconnecting || preProbing || connBlocked ? C.warn : C.text)))),
         const SizedBox(height: 6),
         Center(child: Text(connected ? hms : '00:00:00',
           style: TextStyle(fontFamily: 'JetBrainsMono', fontSize: 38, fontWeight: FontWeight.w700,
             color: connected ? C.accentSoft : C.muted, letterSpacing: 2))),
         const SizedBox(height: 4),
         Center(child: Text(
-          conn == 1 ? (reconnecting ? attemptLine : (_conn.tryAttempt > 0 ? tryLine : tr('устанавливаем соединение…')))
+          // пре-замер: человек видит, ЧТО происходит, и что второй тап отменит (аудит UX 09.10)
+          preProbing ? tr('ищем живой сервер по твоей сети — ещё тап = отмена')
+              : conn == 1 ? (reconnecting ? attemptLine : (_conn.tryAttempt > 0 ? tryLine : tr('устанавливаем соединение…')))
               : reconnecting ? attemptLine
               : connBlocked ? tr('VPN отвалился — килл-свитч не пускает трафик напрямую')
               : conn == 0 ? tr('нажми на кнопку')
@@ -256,9 +259,15 @@ extension ShellHome on ShellState {
               ConnFix.happ => Row(children: [
                   Expanded(child: _btn(tr('Открыть в Happ'), kind: 1, icon: Icons.open_in_new, onTap: _openInHapp)),
                   const SizedBox(width: 12),
-                  Expanded(child: _btn(tr('Скачать приложение'), kind: 2, icon: Icons.download,
-                      onTap: () => _open(kDownloadUrl))),
+                  // Вторая кнопка — ГАЙД по Happ (account.dart), а не страница скачивания bitaps,
+                  // который у человека уже стоит (аудит UX 09.10 — ссылка вела не туда).
+                  Expanded(child: _btn(tr('Инструкция Happ'), kind: 2, icon: Icons.download,
+                      onTap: () => _open('https://bitapsvpn.com/happ.html'))),
                 ]),
+              // Истекла — продление; гость/лимит — Кабинет; таймаут/разрешение — повтор (09.10)
+              ConnFix.renew => _btn(tr('Продлить подписку'), kind: 1, icon: Icons.rocket_launch, onTap: _openPaywall),
+              ConnFix.account => _btn(tr('Открыть кабинет'), kind: 1, icon: Icons.person_outline, onTap: () => _goTab(2)),
+              ConnFix.retry => _btn(tr('Повторить'), kind: 1, icon: Icons.refresh, onTap: toggle),
               ConnFix.refreshSub => _btn(tr('Обновить подписку'), kind: 1, icon: Icons.refresh,
                   onTap: _subVisibleLoading ? null : () => _refreshSub()),
               // Узел не пропустил трафик — ведём к списку, где уже видно, какие сервера рабочие
@@ -355,7 +364,8 @@ extension ShellHome on ShellState {
     // value — текущее состояние. ExcludeSemantics на визуале, чтобы кольца/иконки не шумели.
     return Semantics(
       button: true,
-      label: connected ? tr('Отключить') : tr('Подключиться'),
+      // conn==1: тап ОТМЕНЯЕТ попытку — скринридер обязан это говорить (аудит UX 09.10)
+      label: connected ? tr('Отключить') : (conn == 1 || preProbing) ? tr('Отменить подключение') : tr('Подключиться'),
       // value повторяет видимый статус (строка 41), включая honesty-гейт: в демо скринридер
       // тоже слышит «Демо-режим», а не «Подключено»; при блокировке — «Трафик заблокирован».
       value: connBlocked ? tr('Трафик заблокирован') : conn == 0 ? tr('Отключено') : conn == 1 ? tr('Подключение…') : (gEngineReal ? tr('Подключено') : tr('Демо-режим')),
