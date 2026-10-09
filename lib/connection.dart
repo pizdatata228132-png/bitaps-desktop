@@ -708,7 +708,7 @@ class ConnectionController extends ChangeNotifier {
   /// пре-флайт в engine.dart), только ПЕРВАЯ попытка и только если сам кандидат — прямая нода
   /// (провал рельсы подхватывать нечем). Чистая функция — правило покрыто restricted_test.
   static bool roamRescue(bool bestServer, bool restricted, int attempt, Server candidate) =>
-      !bestServer && restricted && attempt == 1 && !candidate.proto.startsWith('LTE');
+      !bestServer && restricted && attempt == 1 && !candidate.proto.startsWith('CDN');
 
   /// Спрятать прогресс автоперебора (успех/стоп/отмена). Без notifyListeners: вызывается рядом
   /// с _fail/_startSession, которые и так перерисуют экран.

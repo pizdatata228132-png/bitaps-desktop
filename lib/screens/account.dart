@@ -152,6 +152,14 @@ extension ShellAccount on ShellState {
 
   Widget _account() {
     final daysLeft = _daysLeft(); // считаем один раз за билд (tryParse+арифметика), переиспользуем ниже
+    // Доскролл к форме поддержки после перехода «Написать в поддержку» с Главной (аудит UX 09.10)
+    if (wantSupportScroll) {
+      wantSupportScroll = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final c = supportCardKey.currentContext;
+        if (c != null) Scrollable.ensureVisible(c, duration: const Duration(milliseconds: 400), curve: Curves.easeOut);
+      });
+    }
     return ListView(
         padding: const EdgeInsets.all(20),
         children: [
@@ -211,7 +219,7 @@ extension ShellAccount on ShellState {
             ])),
           ),
           const SizedBox(height: 14),
-          _card(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Container(key: supportCardKey, child: _card(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [_gIcon(Icons.forum), const SizedBox(width: 12), _kicker(tr('поддержка'))]),
             const SizedBox(height: 12),
             // Куда ответить. Раньше заявка уходила с пустым контактом: в группе поддержки стояло
@@ -254,7 +262,8 @@ extension ShellAccount on ShellState {
               behavior: HitTestBehavior.opaque,
               onTap: () => _open(kSupport),
               child: Center(child: Text(tr('или напиши @bitapssupport'), style: mono(12, c: C.accent)))),
-          ])),
+          ]))),
+          // конец Container(key: supportCardKey) — доскролл из «Написать в поддержку»
           const SizedBox(height: 14),
           _card(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [_gIcon(Icons.help), const SizedBox(width: 12), _kicker(tr('частые вопросы'))]),
@@ -345,6 +354,10 @@ extension ShellAccount on ShellState {
           const SizedBox(width: 12),
           Expanded(child: _btn(tr('Ключ в боте'), kind: 1, icon: Icons.smart_toy, onTap: () => _open(kBot))),
         ]),
+        const SizedBox(height: 10),
+        // Явный путь покупки для гостя (аудит UX 09.10): «Ключ в боте» не читалось как «купить»,
+        // и явного экрана покупки для незалогиненного не было вовсе.
+        SizedBox(width: double.infinity, child: _btn(tr('Купить подписку — в Telegram-боте'), kind: 2, icon: Icons.shopping_bag_outlined, onTap: () => _open(kBot))),
       ]));
     }
     final days = _daysLeft();

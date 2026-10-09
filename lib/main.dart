@@ -390,6 +390,10 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
   /// список серверов показывает «переключаюсь на …», повторные тапы игнорируются.
   bool hotSwitching = false;
   String hotSwitchTarget = '';
+  /// «Написать в поддержку» с Главной: вести в Кабинет И доскроллить до формы заявки —
+  /// иначе человек приземлялся наверх длинного экрана и форму не находил (аудит UX 09.10).
+  bool wantSupportScroll = false;
+  final supportCardKey = GlobalKey();
   void toggle() async {
     // Режим «лучший сервер» — по замеру по ТВОЕЙ сети: перед коннектом убеждаемся, что у
     // лучшего кандидата есть СВЕЖИЙ живой замер (а не просто лучший по статистике хаба).
@@ -1199,7 +1203,7 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
       statsRtt: stat?.rttNow,
       statsDead: insight.dead,
       histPenalty: nodeHist[s.id]?.historyPenalty(DateTime.now()) ?? 0,
-      isCdn: s.proto.startsWith('LTE'),
+      isCdn: s.proto.startsWith('CDN'),
       mode: m,
     );
   }
@@ -1216,7 +1220,7 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
     final ra = rank(a), rb = rank(b);
     if (ra != rb) return ra.compareTo(rb);
     if (TunnelEngine.instance.lastProfile == NetProfile.restricted) {
-      final ca = a.proto.startsWith('LTE') ? 0 : 1, cb = b.proto.startsWith('LTE') ? 0 : 1;
+      final ca = a.proto.startsWith('CDN') ? 0 : 1, cb = b.proto.startsWith('CDN') ? 0 : 1;
       if (ca != cb) return ca.compareTo(cb);
     }
     final sa = _scoreOf(a, m), sb = _scoreOf(b, m);

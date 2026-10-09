@@ -77,13 +77,20 @@ extension ShellHome on ShellState {
           const SizedBox(height: 18),
           _connFailCard(connFail!, connFix),
         ],
+        // Состояние подписки на Главной (аудит UX 09.10): истёкшая/неактивная раньше нигде не
+        // показывалась до провального коннекта — человек жал кнопку и лишь тогда узнавал. Баннер
+        // ведёт в пейвол продления, как баннер в Кабинете.
+        if (!connected && conn != 1 && loggedIn && (subActive == false || (_daysLeft() ?? 1) <= 0)) ...[
+          const SizedBox(height: 18),
+          _expiryBanner(_daysLeft() ?? 0),
+        ],
         const SizedBox(height: 20),
         Row(children: [
           for (int i = 0; i < 4; i++)
             Expanded(child: Padding(padding: EdgeInsets.only(right: i < 3 ? 8 : 0), child: _modeChip(modeLabels[i], i))),
         ]),
         const SizedBox(height: 10),
-        Text(tr('Режим подбирает сервер: Авто — баланс отклика и стабильности, Стрим — устойчивость канала, Игры — минимальный джиттер, Прив. — зарубежный узел.'), style: mono(12)),
+        Text(tr('Режим подбирает сервер: Авто — баланс скорости и стабильности, Стрим — ровный канал, Игры — минимальная задержка, Прив. — зарубежный узел.'), style: mono(12)),
         const SizedBox(height: 14),
         _card(child: Row(children: [
           Text(server.flag, style: const TextStyle(fontSize: 24)),
@@ -184,7 +191,7 @@ extension ShellHome on ShellState {
             _gIcon(Icons.all_inclusive),
             const SizedBox(width: 12),
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(tr('Авто-подключение'), style: disp(15, w: FontWeight.w600)),
+              Text(tr('Подключаться автоматически при запуске'), style: disp(15, w: FontWeight.w600)),
               const SizedBox(height: 2),
               Text(alwaysOn
                   ? tr('VPN будет работать постоянно — даже после перезагрузки устройства')
@@ -277,8 +284,10 @@ extension ShellHome on ShellState {
                   Expanded(child: _btn(tr('Проверить серверы'), kind: 2, icon: Icons.network_ping,
                       onTap: _pinging ? null : _pingServers)),
                 ]),
-              // поддержка живёт в Кабинете — ведём туда, а не наружу в переписку с нуля
-              _ => _btn(tr('Написать в поддержку'), kind: 1, icon: Icons.forum, onTap: () => _goTab(2)),
+              // поддержка живёт в Кабинете — ведём туда С доскроллом до формы заявки,
+              // иначе человек приземлялся наверх длинного экрана (аудит UX 09.10)
+              _ => _btn(tr('Написать в поддержку'), kind: 1, icon: Icons.forum,
+                  onTap: () { wantSupportScroll = true; _goTab(2); }),
             },
           ],
         ]),

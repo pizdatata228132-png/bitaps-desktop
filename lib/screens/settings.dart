@@ -222,13 +222,13 @@ extension ShellSettings on ShellState {
           _card(child: Column(children: [
             _toggle(tr('Блокировка входа'), tr('Только экран: от доступа к устройству не защищает'), tgl1, (v) { if (v) { _enableLock(); } else { _pinFails = 0; _clearPinThrottle(); rebuild(() { tgl1 = false; appPin = null; }); _save(); } }),
             _divider(),
-            _toggle(tr('Обрыв соединения'), tr('Уведомлять, если VPN отвалился'), tgl2, (v) { rebuild(() => tgl2 = v); _save(); }),
+            _toggle(tr('Уведомлять об обрыве'), tr('Сигнал, если VPN отвалился'), tgl2, (v) { rebuild(() => tgl2 = v); _save(); }),
             _divider(),
             _toggle(tr('Килл-свитч'), _killSwitchSub(), killSwitch, _setKillSwitch),
             _divider(),
-            _toggle(tr('Подписка истекает'), tr('Напомнить за пару дней'), tgl3, (v) { rebuild(() => tgl3 = v); _save(); }),
+            _toggle(tr('Уведомлять об истечении'), tr('Напомнить за пару дней до конца подписки'), tgl3, (v) { rebuild(() => tgl3 = v); _save(); }),
             _divider(),
-            _toggle(tr('Лимит трафика'), tr('Сигнал при расходе от 5 ГБ за сессию'), tgl4, (v) { rebuild(() => tgl4 = v); _save(); }),
+            _toggle(tr('Уведомлять о большом расходе'), tr('Сигнал при расходе от 5 ГБ за сессию'), tgl4, (v) { rebuild(() => tgl4 = v); _save(); }),
             // «Авто-подключение»/«Автопереподключение» здесь УБРАНЫ (30.08, владелец): единый
             // тумблер «Авто-подключение» живёт на Главной под автовыбором сервера и включает
             // сразу всё: подключение при запуске, переподключение при обрыве и автостарт
@@ -240,7 +240,7 @@ extension ShellSettings on ShellState {
             _kicker(tr('система')),
             const SizedBox(height: 10),
             _card(child: Column(children: [
-              _toggle(tr('Запускать при входе'), tr('Автостарт вместе с системой'), autoLaunch, _setAutoLaunch),
+              _toggle(tr('Запускать приложение при входе в систему'), tr('Автостарт вместе с системой'), autoLaunch, _setAutoLaunch),
               _divider(),
               _toggle(tr('Старт свёрнутым'), tr('При автозапуске — сразу в трей'), startMinimized, _setStartMinimized),
               _divider(),

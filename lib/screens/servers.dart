@@ -234,8 +234,8 @@ extension ShellServers on ShellState {
     final favList = _byPing(all.where((s) => favs.contains(s.id)));
     // Узлы «белого списка» (через CDN) показываем отдельной группой: они нужны, когда прямые
     // адреса недоступны, но обычно медленнее — пользователю честнее видеть это разделение.
-    final direct = _byPing(all.where((s) => !s.proto.startsWith('LTE')));
-    final bs = _byPing(all.where((s) => s.proto.startsWith('LTE')));
+    final direct = _byPing(all.where((s) => !s.proto.startsWith('CDN')));
+    final bs = _byPing(all.where((s) => s.proto.startsWith('CDN')));
     return [
       if (favList.isNotEmpty) ...[
         _kicker(tr('⭐ избранное')),
@@ -250,7 +250,7 @@ extension ShellServers on ShellState {
       ],
       if (bs.isNotEmpty) ...[
         const SizedBox(height: 22),
-        _kicker(tr('устойчивый · CDN')),
+        _kicker(tr('устойчивые · через CDN')),
         const SizedBox(height: 10),
         for (final s in bs) _serverRow(s, locked),
       ],
@@ -340,7 +340,7 @@ extension ShellServers on ShellState {
                   // CDN лежат вперемешку без заголовков групп, и отличить их иначе нечем.
                   Flexible(child: Text(
                     s.country.isNotEmpty ? tr(s.country)
-                      : tr(s.proto.startsWith('LTE') ? 'через CDN' : 'прямой узел'),
+                      : tr(s.proto.startsWith('CDN') ? 'через CDN' : 'прямой узел'),
                     style: mono(12), overflow: TextOverflow.ellipsis)),
                   if (s.premium) ...[const SizedBox(width: 6), _badge('PRO', accentSoftInk)],
                   if (st == NodeState.blocked) ...[const SizedBox(width: 6), _badge(tr('не работает'), C.danger)]

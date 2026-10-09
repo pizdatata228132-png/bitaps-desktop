@@ -181,14 +181,21 @@ Server serverFromSubNode(SubNode n, {int ping = 0}) {
   final parts = n.remark.trim().split(' ');
   final flag = parts.isNotEmpty ? parts.first : '🌐';
   var city = parts.length > 1 ? parts.sublist(1).join(' ') : n.remark;
-  // Хвост рельсы («· LTE», «· БС», «· CDN») из названия убираем: он и так виден по заголовку
-  // группы («устойчивый · CDN»), а склеенный с названием мешал переводу — «Румыния · LTE»
-  // в словаре стран не находится, и в английском интерфейсе строка оставалась русской.
-  city = city.replaceFirst(RegExp(r'\s*·\s*(LTE|БС|CDN)\s*$', caseSensitive: false), '');
+  // Хвосты типа маршрута («· LTE», «· БС», «· CDN», «· SS») из названия убираем: мешали
+  // переводу (в словаре стран их нет — EN-интерфейс оставался русским). 09.10: + «· SS».
+  city = city.replaceFirst(RegExp(r'\s*·\s*(LTE|БС|CDN|SS)\s*$', caseSensitive: false), '');
+  // Подпись протокола — по ФАКТУ, а не «всё Reality»: SS-резерв и CDN-рельсы иначе лгали
+  // в карточке (аудит UX 09.10). «LTE» (мобильная сеть!) больше нигде не показываем.
+  final rawProto = (n.xray['protocol'] ?? '').toString().toLowerCase();
+  final net = (((n.xray['streamSettings'] as Map?) ?? const {})['network'] ?? '').toString();
+  final proto = rawProto == 'shadowsocks'
+      ? 'SS'
+      : (net == 'xhttp' || net == 'splithttp')
+          ? 'CDN'
+          : 'Reality';
   return Server(
     n.tag, city, '', flag, ping, 0,
-    // «LTE» вместо «БС»: так узлы белого списка названы и в подписке, и в кабинете
-    proto: n.singboxReady ? 'Reality' : 'LTE · CDN',
+    proto: proto,
   );
 }
 
@@ -217,13 +224,13 @@ int compareServers(Server a, Server b, int Function(Server) ping,
     if (ra != rb) return ra.compareTo(rb);
   }
   if (cdnFirst) {
-    final ca = a.proto.startsWith('LTE') ? 0 : 1, cb = b.proto.startsWith('LTE') ? 0 : 1;
+    final ca = a.proto.startsWith('CDN') ? 0 : 1, cb = b.proto.startsWith('CDN') ? 0 : 1;
     if (ca != cb) return ca.compareTo(cb);
   }
   final pa = ping(a), pb = ping(b);
   if (pa > 0 && pb > 0 && pa != pb) return pa.compareTo(pb);
   if ((pa > 0) != (pb > 0)) return pa > 0 ? -1 : 1; // замеренный всегда впереди незамеренного
-  final ca = a.proto.startsWith('LTE') ? 1 : 0, cb = b.proto.startsWith('LTE') ? 1 : 0;
+  final ca = a.proto.startsWith('CDN') ? 1 : 0, cb = b.proto.startsWith('CDN') ? 1 : 0;
   return ca.compareTo(cb);
 }
 
