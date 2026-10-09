@@ -492,6 +492,7 @@ const Map<String, String> _kEn = {
   'Режим подбирает сервер: Авто — баланс скорости и стабильности, Стрим — ровный канал, Игры — минимальная задержка, Прив. — зарубежный узел.': 'Mode picks the server: Auto — balance of speed and stability, Stream — steady channel, Games — lowest latency, Priv. — foreign node.',
   'Теперь жми большую кнопку — подключимся сами': 'Now tap the big button — we will connect ourselves',
   'Купить подписку — в Telegram-боте': 'Buy a subscription — in the Telegram bot',
+  'Это ссылка на подписку, а не вход. Импортируй её через «Вставить» в карточке ключа — серверы появятся списком.': 'That is a subscription link, not a sign-in. Import it via "Paste" in the key card — servers will appear as a list.',
   'тарифы': 'plans',
   'устройства': 'devices',
   '+50 ₽/мес за каждое доп-устройство · максимум 10': '+50 ₽/mo per extra device · 10 max',

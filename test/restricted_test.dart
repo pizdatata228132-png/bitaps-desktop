@@ -14,7 +14,7 @@ import 'package:bitaps_vpn/singbox_config.dart';
 
 // Прямая нода и CDN-рельса в виде строк списка серверов (proto — как в serverFromSubNode).
 Server _direct(String id, {int ping = 0}) => Server(id, 'Финляндия', '', '🇫🇮', ping, 0);
-Server _relay(String id, {int ping = 0}) => Server(id, 'Нидерланды', '', '🛡️', ping, 0, proto: 'LTE · CDN');
+Server _relay(String id, {int ping = 0}) => Server(id, 'Нидерланды', '', '🛡️', ping, 0, proto: 'CDN');
 
 void main() {
   group('classifyNetProfile — классификация пре-флайта', () {

@@ -19,7 +19,11 @@ const kLiveRemarks = [
 ];
 
 Server _fromRemark(String remark) => serverFromSubNode(SubNode(
-      remark: remark, tag: remark, server: '1.2.3.4', port: 443, xray: const {},
+      remark: remark, tag: remark, server: '1.2.3.4', port: 443,
+      // proto теперь по факту протокола (прод 09.10): CDN-узел = xhttp-запись в xray-карте
+      xray: remark.contains('LTE')
+          ? const {'protocol': 'vless', 'streamSettings': {'network': 'xhttp'}}
+          : const {'protocol': 'vless', 'streamSettings': {'network': 'tcp', 'security': 'reality'}},
       // прямые узлы движок sing-box понимает, узлы через CDN — нет; на разбор названия
       // это не влияет, но пусть запись будет такой же, как в жизни
       singbox: remark.contains('LTE') ? null : const {},
@@ -52,7 +56,7 @@ void main() {
 
   group('выбор лучшего сервера', () {
     final direct = _fromRemark('🇫🇮 Финляндия');       // proto Reality
-    final cdn = _fromRemark('🛡️ Румыния · LTE');       // proto LTE · CDN
+    final cdn = _fromRemark('🛡️ Румыния · LTE');       // proto CDN (рельса, xhttp)
 
     int pingOf(Server s, Map<String, int> m) => m[s.id] ?? 0;
 
@@ -89,7 +93,7 @@ void main() {
 // проходит, а трафик сквозь него — нет. Узел с зелёным откликом оказывался мёртвым, и «лучший
 // сервер» выбирал именно его.
 void _verdictTests() {
-  Server srv(String id, {bool cdn = false}) => Server(id, id, '', '🌐', 0, 0, proto: cdn ? 'LTE · CDN' : 'Reality');
+  Server srv(String id, {bool cdn = false}) => Server(id, id, '', '🌐', 0, 0, proto: cdn ? 'CDN' : 'Reality');
 
   test('непригодный узел никогда не выигрывает у рабочего', () {
     final dead = srv('dead'), live = srv('live', cdn: true);
