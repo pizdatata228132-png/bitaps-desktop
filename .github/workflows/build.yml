@@ -464,6 +464,11 @@ jobs:
           codesign --force --deep --timestamp=none --sign - "$APP"
           codesign --verify --deep --verbose=2 "$APP"
           mkdir -p dmg && cp -R "$APP" dmg/ && ln -sf /Applications dmg/Applications
+          # 14.10 (юзер словил «damaged»): печать $APP не покрывала файл, долетевший в бандл
+          # поздно (libswift_Concurrency.dylib у нового Flutter). Подписываем ПОВТОРНО уже ту
+          # копию, что уезжает в dmg, и верифицируем СТРОГО — кривая печать больше не пройдёт.
+          codesign --force --deep --timestamp=none --sign - "dmg/bitaps_vpn.app"
+          codesign --verify --deep --strict "dmg/bitaps_vpn.app"
           hdiutil create -volname "bitaps VPN" -srcfolder dmg -ov -format UDZO bitaps-macos.dmg
           ls -la bitaps-macos.dmg
       - name: Release
