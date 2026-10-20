@@ -862,8 +862,26 @@ Future<SubFetchResult> fetchSubscriptionCached(
   SubCacheStore? store, // null — кэш не работает, поведение как у голого fetchSubscription
   bool allowForeign = false,
 }) async {
-  final sub =
+  var sub =
       await fetchSubscription(url, hwid: hwid, deviceOs: deviceOs, deviceModel: deviceModel, client: client, timeout: timeout, allowForeign: allowForeign);
+  // 20.10: CDN-фронт выдачи. Под глушением/«белыми списками» origin.bit-core.online недоступен
+  // напрямую, а его Яндекс-CDN фронт (sub.bit-core.online) живёт. Прямой ответ 200, но «сеть
+  // упала» → одна попытка через CDN-зеркало до ухода в кэш.
+  if (sub.error != null && url.contains('origin.bit-core.online')) {
+    final mirror = await fetchSubscription(url.replaceFirst('origin.bit-core.online', 'sub.bit-core.online'),
+        hwid: hwid, deviceOs: deviceOs, deviceModel: deviceModel, client: client, timeout: timeout, allowForeign: allowForeign);
+    if (mirror.error == null) {
+      // кэшируем под ИСХОДНЫМ url: следующий запуск читает тот же ключ кэша
+      if (mirror.ok && mirror.rawBody != null) {
+        try {
+          await store?.write(subCacheEncode(url, mirror.rawBody!, DateTime.now()));
+        } catch (_) {/* не критично */}
+        return SubFetchResult(nodes: mirror.nodes, notice: mirror.notice, skipped: mirror.skipped,
+            expiresAt: mirror.expiresAt, cachedAt: null);
+      }
+      return mirror; // осмысленный ответ сервиса (notice) — как есть
+    }
+  }
   if (sub.ok && sub.rawBody != null) {
     try {
       await store?.write(subCacheEncode(url, sub.rawBody!, DateTime.now()));
