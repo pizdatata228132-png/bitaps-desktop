@@ -11,22 +11,29 @@ extension ShellApi on ShellState {
   // до следующего запуска само — _checkUpdate зовётся один раз, из initState.
   Future<void> _checkUpdate() async {
     if (kBuildNumber == 0) return;
+    // 21.10 (комплаенс): Play-сборка НЕ предлагает sideload APK с нашего сервера — это прямое
+    // нарушение анти-steering политики Play (риск снятия) и мёртвый сценарий (подписи не совпадут).
+    if (kStoreBuild) return;
     try {
-      final r = await http.get(Uri.parse(kBuildNumberUrl)).timeout(const Duration(seconds: 10));
-      if (r.statusCode != 200) return;
-      final latest = int.tryParse(r.body.trim()) ?? 0;
+      final man = await _fetchUpdateManifest();
+      if (man == null) return;
+      final latest = (man['latest'] is num) ? (man['latest'] as num).toInt() : 0;
       if (latest <= kBuildNumber || !mounted) return;
+      // min_supported: серверный рубильник «вывести плохую сборку из обращения» — с нею диалог
+      // неотключаемый и обновление идёт независимо от «позже»/автообновления.
+      final minSup = (man['min_supported'] is num) ? (man['min_supported'] as num).toInt() : 0;
+      final force = minSup > 0 && kBuildNumber < minSup;
       final p = await SharedPreferences.getInstance();
-      // «Больше не предлагать эту версию» — выбор человека важнее нового запуска.
-      if ((p.getInt('updateSkipBuild') ?? 0) >= latest) return;
-      // «Позже» персистим (аудит 09.09, P2): иначе в долгой сессии диалог всплывал каждые
-      // 6 часов по таймеру вопреки заявленному «один раз на запуск». Просим не чаще раза в сутки.
-      final laterAt = p.getInt('updateLaterAt') ?? 0;
-      if (DateTime.now().millisecondsSinceEpoch - laterAt < 86400000) return;
+      if (!force) {
+        // «Больше не предлагать эту версию» — выбор человека важнее нового запуска.
+        if ((p.getInt('updateSkipBuild') ?? 0) >= latest) return;
+        final laterAt = p.getInt('updateLaterAt') ?? 0;
+        if (DateTime.now().millisecondsSinceEpoch - laterAt < 86400000) return;
+      }
       // 26.08 (владелец): включённое ОДИН раз автообновление — дальше сборки подтягиваются
       // сами, без диалога: скачали → запустили установщик → ушли на перезапуск.
-      if (p.getBool('autoUpdate') ?? false) {
-        await _autoApply(latest);
+      if (force || (p.getBool('autoUpdate') ?? false)) {
+        await _autoApply(latest, man: man, force: force);
         return;
       }
       if (!mounted) return;
@@ -34,11 +41,33 @@ extension ShellApi on ShellState {
     } catch (_) {/* тихо */}
   }
 
+  /// Манифест обновления: update.json (sha256/min_supported), фолбэк — голый build_number.txt
+  /// (переходный период), и то и другое — с зеркалом на CDN при мёртвом origin (глушение).
+  Future<Map<String, dynamic>?> _fetchUpdateManifest() async {
+    for (final base in const ['https://origin.bit-core.online', 'https://$kUpdateMirrorHost']) {
+      try {
+        final r = await http.get(Uri.parse('$base/dl/update.json')).timeout(const Duration(seconds: 10));
+        if (r.statusCode == 200) {
+          final d = jsonDecode(r.body);
+          if (d is Map && d['latest'] is num) return d.cast<String, dynamic>();
+        }
+        // манифеста нет (старый релиз-пайплайн) — голый номер, как раньше
+        final rb = await http.get(Uri.parse('$base/dl/build_number.txt')).timeout(const Duration(seconds: 10));
+        if (rb.statusCode == 200) {
+          final latest = int.tryParse(rb.body.trim()) ?? 0;
+          if (latest > 0) return {'latest': latest};
+        }
+      } catch (_) {/* пробуем зеркало */}
+    }
+    return null;
+  }
+
   /// Самостоятельное обновление: скачать инсталлятор платформы в temp и запустить его.
   /// Linux (tar.gz) сам себя не ставит — там честный диалог как раньше. Любой сбой —
   /// тот же диалог: авто-путь обязан деградировать в ручной, а не в тишину.
-  Future<void> _autoApply(int latest) async {
-    const dl = 'https://origin.bit-core.online/dl/';
+  /// 21.10: сверка SHA-256 с манифестом до запуска (скомпрометированный файл не исполняем),
+  /// потоковая запись на диск (100+ МБ не в память), teardown туннеля перед exit(0).
+  Future<void> _autoApply(int latest, {Map<String, dynamic>? man, bool force = false}) async {
     final file = Platform.isAndroid
         ? 'bitaps.apk'
         : Platform.isWindows
@@ -50,32 +79,56 @@ extension ShellApi on ShellState {
       if (mounted) _askUpdate(latest);
       return;
     }
+    final platKey = Platform.isAndroid ? 'android' : (Platform.isWindows ? 'windows' : 'macos');
+    final wantSha = ((man?['sha256'] as Map?)?[platKey] ?? '').toString().toLowerCase();
     try {
       _toast(tr('Обновление: скачиваю новую сборку…'));
-      final r = await http.get(Uri.parse('$dl$file')).timeout(const Duration(minutes: 5));
-      if (r.statusCode != 200 || r.bodyBytes.length < 100000) {
-        throw Exception('bad download ${r.statusCode}');
-      }
+      // качаем потоком в файл (не bodyBytes в память) и с зеркалом, как у подписки
       final path = '${Directory.systemTemp.path}${Platform.isWindows ? '\\' : '/'}bitaps-update-$latest-$file';
-      await File(path).writeAsBytes(r.bodyBytes, flush: true);
+      var got = false;
+      Object? lastErr;
+      for (final base in const ['https://origin.bit-core.online', 'https://$kUpdateMirrorHost']) {
+        try {
+          final req = http.Request('GET', Uri.parse('$base/dl/$file'));
+          final r = await http.Client().send(req).timeout(const Duration(minutes: 5));
+          if (r.statusCode != 200) throw Exception('bad download ${r.statusCode}');
+          final f = File(path);
+          final sink = f.openWrite();
+          await for (final chunk in r.stream) { sink.add(chunk); }
+          await sink.flush(); await sink.close();
+          got = true; break;
+        } catch (e) { lastErr = e; }
+      }
+      if (!got) throw Exception('download failed: $lastErr');
+      // Целостность ДО исполнения: хаб/CDN скомпрометирован ≠ все пользователи с ботнетом.
+      if (wantSha.isNotEmpty) {
+        final digest = await sha256.bind(File(path).openRead()).last;
+        if (digest.toString() != wantSha) {
+          try { await File(path).delete(); } catch (_) {}
+          throw Exception('sha256 mismatch');
+        }
+      }
       if (Platform.isAndroid) {
         // open_file через FileProvider сам откроет системный установщик APK
         final res = await OpenFile.open(path);
         if (res.type != ResultType.done) {
-          // 15.09: «Permission denied: REQUEST_INSTALL_PACKAGES» — человек ещё не дал нам
-          // установку из неизвестных источников. Ведём его в системную настройку один раз:
-          // после разрешения все следующие обновления ставятся сами.
           if ((res.message).contains('REQUEST_INSTALL_PACKAGES')) {
             const ch = MethodChannel('bitaps/system');
             try {
               await ch.invokeMethod<bool>('openInstallSettings');
               _toast(tr('Разреши установку из неизвестных источников — дальше обновления встанут сами'));
-              return; // не падаем в диалог: человек в настройке, вернётся — докрутит сам
+              return;
             } catch (_) {/* канала нет (старая нативка) — обычный фолбэк */}
           }
           throw Exception(res.message);
         }
-      } else if (Platform.isWindows) {
+        // 21.10: exit(0) убран — при отмене установки человек оставался с мёртвым процессом;
+        // система сама прибьёт нас при замене пакета.
+        return;
+      }
+      // десктоп: снимаем туннель до выхода — иначе прокси/xray-сирота живёт со старым конфигом
+      try { await TunnelEngine.instance.disconnect().timeout(const Duration(seconds: 3)); } catch (_) {}
+      if (Platform.isWindows) {
         await Process.start(path, [], mode: ProcessStartMode.detached);
       } else if (Platform.isMacOS) {
         await Process.start('open', [path], mode: ProcessStartMode.detached);
@@ -83,7 +136,8 @@ extension ShellApi on ShellState {
       // установщик пошёл — уходим, чтобы обновление встало на незанятые файлы
       exit(0);
     } catch (_) {
-      if (mounted) _askUpdate(latest);
+      if (mounted && !force) _askUpdate(latest);
+      if (mounted && force) _askUpdateForce(latest); // принудительное не гасим молча
     }
   }
 
@@ -133,6 +187,33 @@ extension ShellApi on ShellState {
             onPressed: () { Navigator.pop(ctx); _open(kDownloadUrl); },
             child: Text(tr('Скачать обновление'), style: mono(13, c: C.accent))),
         ],
+      ),
+    );
+  }
+
+  // Блокирующий экран принудительного обновления (min_supported): сборка признана ломавшей —
+  // ни «позже», ни тап мимо, только скачивание. Серверный рубильник против плохого релиза.
+  void _askUpdateForce(int latest) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          backgroundColor: C.bg2,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: C.danger)),
+          title: Text(tr('Требуется обновление'), style: disp(18, w: FontWeight.w700, c: C.danger)),
+          content: SizedBox(width: 360, child: Text(
+            appLang == 'en'
+                ? 'Your build $kBuildNumber is out of service. Update to build $latest to continue.'
+                : 'Твоя сборка $kBuildNumber выведена из работы. Для продолжения обновись до сборки $latest.',
+            style: mono(13, c: C.text))),
+          actions: [
+            TextButton(
+              onPressed: () { _autoApply(latest, force: true); },
+              child: Text(tr('Скачать и обновить'), style: mono(13, c: C.accent, w: FontWeight.w700))),
+          ],
+        ),
       ),
     );
   }

@@ -35,6 +35,12 @@ const int kBuildNumber = int.fromEnvironment('BUILD_NUMBER', defaultValue: 0);
 // Номер последней сборки и сами файлы отдаём со СВОЕГО сервера: сторонний хостинг для
 // пользователя из РФ — лишние редиректы и риск блокировки, а нам не нужен посредник.
 const kBuildNumberUrl = 'https://origin.bit-core.online/dl/build_number.txt';
+// 21.10: манифест обновлений (sha256 + min_supported + откат) — генерится CI рядом с ассетами.
+// Фолбэк на голый build_number.txt сохранён для переходного периода.
+const kUpdateManifestUrl = 'https://origin.bit-core.online/dl/update.json';
+// То же через CDN-фронт (sub.bit-core.online) — под глушением origin мёртв, а обновления нужны
+// именно в волны блокировок (свежие транспорты приезжают кодом).
+const kUpdateMirrorHost = 'sub.bit-core.online';
 // Публичная статистика доступности нод (спарклайны на «Серверы»): generated_at + per-node
 // ok/rtt_now/series. Публичный эндпоинт — без токена и hwid, ничего личного не уходит.
 const kNodeStatsUrl = 'https://origin.bit-core.online/public/stats';

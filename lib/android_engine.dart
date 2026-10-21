@@ -175,10 +175,12 @@ class AndroidXrayEngine {
 
   /// Время ответа сквозь АКТИВНОЕ подключение (не поднимая временный экземпляр).
   /// -1 — ответа не дождались.
+  /// 21.10 (багхант): при усыновлённом туннеле (adoptRunningTunnel) _v2ray == null, и вечный -1
+  /// здесь тремя фейлами подряд рвал ЖИВОЙ VPN сторожем. Лениво инициализируем через _engine()
+  /// (он идемпотентен) — как connectedDelayAlive, только без лишней ветки у вызывающих.
   Future<int> connectedDelay(String url) async {
     try {
-      final v = _v2ray;
-      if (v == null) return -1;
+      final v = _v2ray ?? await _engine();
       return await v.getConnectedServerDelay(url: url);
     } catch (_) {
       return -1;

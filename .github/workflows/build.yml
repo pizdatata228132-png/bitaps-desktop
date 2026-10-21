@@ -511,3 +511,40 @@ jobs:
           [ -f "$P/flutter_v2ray_client.podspec" ] || cp "$P/flutter_v2ray.podspec" "$P/flutter_v2ray_client.podspec"
           ls "$P"
       - run: flutter build ios --release --no-codesign --dart-define=BUILD_NUMBER=${{ needs.prep.outputs.bn }}
+
+  # 21.10: манифест обновлений ПОСЛЕ всех платформ — приложение сверяет sha256 до запуска
+  # инсталлятора (скомпрометированный файл не исполняем), min_supported — серверный рубильник
+  # «вывести плохую сборку», поднимается только осознанным коммитом (sre-правило).
+  publish:
+    needs: [prep, windows, macos, linux, android]
+    runs-on: ubuntu-latest
+    steps:
+      - name: update.json по ассетам релиза
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BN: ${{ needs.prep.outputs.bn }}
+        run: |
+          set -e
+          B="https://github.com/${{ github.repository }}/releases/download/latest"
+          for f in bitaps-setup.exe bitaps-macos.dmg bitaps.apk; do
+            curl -sL --fail "$B/$f" -o "$f"
+          done
+          W=$(sha256sum bitaps-setup.exe | cut -d' ' -f1)
+          M=$(sha256sum bitaps-macos.dmg | cut -d' ' -f1)
+          A=$(sha256sum bitaps.apk | cut -d' ' -f1)
+          # min_supported читаем из файла репо (переезда руками), дефолт 0 = не принуждаем
+          MIN=0
+          [ -f pkg/min_supported.txt ] && MIN=$(cat pkg/min_supported.txt | tr -dc '0-9')
+          python3 - "$BN" "$MIN" "$W" "$M" "$A" << 'PY'
+          import json, sys
+          bn, mn, w, m, a = sys.argv[1:6]
+          json.dump({"latest": int(bn), "min_supported": int(mn),
+                     "sha256": {"windows": w, "macos": m, "android": a}},
+                    open("update.json", "w"), indent=1)
+          PY
+          cat update.json
+      - name: Release update.json
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          files: update.json

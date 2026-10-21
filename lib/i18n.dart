@@ -489,6 +489,8 @@ const Map<String, String> _kEn = {
   'Уведомлять о большом расходе': 'Notify about high usage',
   'Запускать приложение при входе в систему': 'Launch the app at system login',
   'Подключаться автоматически при запуске': 'Connect automatically on launch',
+  'Требуется обновление': 'Update required',
+  'Скачать и обновить': 'Download and update',
   'Режим подбирает сервер: Авто — баланс скорости и стабильности, Стрим — ровный канал, Игры — минимальная задержка, Прив. — зарубежный узел.': 'Mode picks the server: Auto — balance of speed and stability, Stream — steady channel, Games — lowest latency, Priv. — foreign node.',
   'Теперь жми большую кнопку — подключимся сами': 'Now tap the big button — we will connect ourselves',
   'Купить подписку — в Telegram-боте': 'Buy a subscription — in the Telegram bot',
