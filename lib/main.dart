@@ -409,7 +409,9 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
         await _probeFreshForConnect();
         if (!mounted) return;
         if (_preProbeCancel || _conn.conn != 0) return; // отменили или состояние сменилось под нами
-        setState(_repickBest);
+        // Выбор при коннекте — БЕЗ гистерезиса (force): «залип на одной стране» был именно из-за
+        // удержания текущего; свежий замер → лучший по факту (владелец 20.10).
+        setState(() => _repickBest(force: true));
       } finally {
         if (mounted) setState(() => preProbing = false); else preProbing = false;
       }
@@ -417,24 +419,13 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
     _conn.toggle();
   }
 
-  /// Свежесть живого замера кандидата для коннекта: вердикт ok и моложе 2 минут. Лучший свежий —
-  /// задержки в коннекте нет; иначе дозамеряем просроченных перед стартом (по твоей сети, не хабу).
+  /// Пре-замер перед коннектом (режим «лучший сервер»). Владелец 20.10: «автовыбор должен
+  /// пинговаться и выбирать лучшее ПРИ ПОДКЛЮЧЕНИИ» — поэтому меряем верхних кандидатов КАЖДЫЙ
+  /// раз свежо (без 2-минутного окна свежести), параллельно и не более шести — секунды.
   Future<void> _probeFreshForConnect() async {
     if (!bestServer) return;
-    final now = DateTime.now();
-    const fresh = Duration(minutes: 2);
-    bool freshTag(String tag) {
-      final v = nodeVerdicts[tag];
-      return v != null && v.ok && now.difference(v.at) < fresh;
-    }
-    final cand = serverForMode(mode);
-    if (cand.id.isNotEmpty && freshTag(cand.id)) return;
-    // Кап: просроченных может быть весь парк (19+ записей), а перед коннектом важны только
-    // верхние кандидаты — выдача УЖЕ упорядочена сервисом по живости/нагрузке, поэтому первые
-    // шесть просроченных покрывают реальный выбор (аудит UX 09.10: полный прогон держал
-    // кнопку молчащей до ~26 с).
-    final stale = [for (final n in subNodes) if (n.server.isNotEmpty && !freshTag(n.tag)) n.tag].take(6).toList();
-    if (stale.isNotEmpty) await _pingServers(silent: true, onlyTags: stale.toSet());
+    final top = [for (final n in subNodes) if (n.server.isNotEmpty) n.tag].take(6).toSet();
+    if (top.isNotEmpty) await _pingServers(silent: true, onlyTags: top);
   }
 
   // Анимации НЕ гоняем безусловно (..repeat()) — это жгло батарею: starfield + шестерёнка + кольца
