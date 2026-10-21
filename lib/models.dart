@@ -121,21 +121,16 @@ Future<String?> _secRead(SharedPreferences p, String k) async {
   }
 }
 
-// Запись секрета: в secure + удаляем plaintext-копию из prefs. Сбой secure → пишем в prefs (не теряем сессию).
+// Запись секрета: в secure + РЕЗЕРВ в prefs. Раньше plaintext-копия стиралась после secure-записи,
+// и это стоило «вылетов аккаунта»: Android Keystore периодически инвалидирует ключи
+// encryptedSharedPreferences (обновление ОС, ребут, восстановление из бэкапа, смена блокировки
+// экрана) — secure.read пуст/кидает, а в prefs уже пусто → сессия исчезала молча (жалобы 21.10).
+// App-private prefs недоступны без root — резерв там приемлем; потеря сессии для юзера хуже.
 Future<void> _secWrite(SharedPreferences p, String k, String? v) async {
-  // Раздельные try: plaintext-фолбэк выполняется ТОЛЬКО при сбое самой secure-записи, а НЕ при
-  // сбое очистки prefs. Иначе (secure записал, а p.remove упал) в catch дописывался plaintext —
-  // секрет оказывался И в secure, И в открытых prefs, ровно та утечка, что _secWrite предотвращает.
-  bool secureOk = false;
   try {
     if (v != null && v.isNotEmpty) { await _secure.write(key: k, value: v); } else { await _secure.delete(key: k); }
-    secureOk = true;
-  } catch (_) {
-    // secure реально недоступно (напр. нет libsecret) → фолбэк в prefs, чтобы не потерять сессию
-    if (v != null && v.isNotEmpty) { await p.setString(k, v); } else { await p.remove(k); }
-  }
-  // secure-запись прошла → только чистим plaintext-копию; её отсутствие НЕ триггерит дозапись секрета
-  if (secureOk) { try { await p.remove(k); } catch (_) {/* не критично: секрет уже в secure */} }
+  } catch (_) {/* secure недоступно — проживём на резерве */}
+  if (v != null && v.isNotEmpty) { await p.setString(k, v); } else { await p.remove(k); }
 }
 
 // ============================ ИДЕНТИФИКАТОР УСТРОЙСТВА ============================

@@ -419,12 +419,17 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
     _conn.toggle();
   }
 
-  /// Пре-замер перед коннектом (режим «лучший сервер»). Владелец 20.10: «автовыбор должен
-  /// пинговаться и выбирать лучшее ПРИ ПОДКЛЮЧЕНИИ» — поэтому меряем верхних кандидатов КАЖДЫЙ
-  /// раз свежо (без 2-минутного окна свежести), параллельно и не более шести — секунды.
+  /// Пре-замер перед коннектом (режим «лучший сервер»). Владелец 20-21.10: «автовыбор должен
+  /// пинговаться и выбирать лучшее ПРИ ПОДКЛЮЧЕНИИ, причём из ВСЕХ нод, а подставлять и обычные,
+  /// если ничего не работает». Меряем верхних кандидатов КАЖДЫЙ раз свежо, выборка — ПО СКОРУ
+  /// (прямые/CDN/SS вперемешку), а не по порядку выдачи: там LTE шли первыми, и на сетях, где CDN
+  /// заблокирован, замер покрывал только мёртвые рельсы и лучший выбирался из них же.
   Future<void> _probeFreshForConnect() async {
     if (!bestServer) return;
-    final top = [for (final n in subNodes) if (n.server.isNotEmpty) n.tag].take(6).toSet();
+    final cand = fleet.where((s) => s.available).toList();
+    if (cand.isEmpty) return;
+    cand.sort((a, b) => _scoreOf(a, mode).compareTo(_scoreOf(b, mode)));
+    final top = cand.take(8).map((s) => s.id).toSet();
     if (top.isNotEmpty) await _pingServers(silent: true, onlyTags: top);
   }
 
