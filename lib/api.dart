@@ -328,7 +328,7 @@ extension ShellApi on ShellState {
       if (!mounted) return;
       if (tgId != reqTgId || appToken != reqToken) return; // сессия сменилась во время запроса
       // silent: свой тост уже показываем ниже — иначе «Вышли из аккаунта» тут же перебивался бы
-      if (r.statusCode == 401 || r.statusCode == 403) { _doLogout(silent: true); _toast(tr('Сессия истекла — войди снова')); return; }
+      if (r.statusCode == 401 || r.statusCode == 403) { _doLogout(silent: true, reason: 'rotate-secret ${r.statusCode}'); _toast(tr('Сессия истекла — войди снова')); return; }
       if (r.statusCode >= 500) { _toast(_srvErr(r.statusCode)); return; } // 5xx → «сервер недоступен», а не «нет интернета»
       final d = _asObj(r.body);
       if (d == null) { _toast(_badRespErr); return; }
@@ -621,7 +621,7 @@ extension ShellApi on ShellState {
         // 401 от gateway/прокси и чужие 403 — транзиент, сессию из-за них не роняем.
         final d401 = _asObj(r.body);
         if (d401 != null && d401['error'] == 'unauthorized') {
-          _doLogout(silent: true);
+          _doLogout(silent: true, reason: 'app-sub unauthorized');
           // Даже при тихом фоновом рефреше (старт приложения) сообщаем явно: иначе человек
           // смотрел бы на устаревший кабинет, не зная, что сессия уже не его.
           _toast(tr('Сессия истекла — войди снова'));

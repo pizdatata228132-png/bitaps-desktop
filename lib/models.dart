@@ -20,9 +20,14 @@ bool gEngineReal = false;
 const bool kStoreBuild = bool.fromEnvironment('STORE_BUILD');
 // Базовый URL edge-функций (functions/v1) — вынесен, чтобы не повторять один и тот же префикс
 // в каждом эндпоинте. Значения эндпоинтов идентичны прежним полным литералам.
-const kFnBase = 'https://bjkozsukvifkxriojxrz.supabase.co/functions/v1/';
+// 26.10: приложение переведено на ПРОД-проект auadymolzceahayqdwhn. До этого здесь оставался
+// старый flagged-проект bjkozsukvifkxriojxrz — его БД давно не получает новых юзеров (бот/сайт
+// пишут в новый), поэтому свежие аккаунты не могли войти («подписка есть, приложение не видит»),
+// а сессии жили в мёртвой БД. apikey — legacy anon JWT нового проекта (эквивалент publishable
+// для гейтвея функций; sb_publishable нового проекта не был записан в ключах).
+const kFnBase = 'https://auadymolzceahayqdwhn.supabase.co/functions/v1/';
 const kNotify = '${kFnBase}notify';
-const kApiKey = 'sb_publishable_X2CJWgjqeZtbNelAri9ofw_trbfWF9Z';
+const kApiKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF1YWR5bW9semNlYWhheXFkd2huIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc2ODAzNDQsImV4cCI6MjEwMzI1NjM0NH0.VkK7W8j9y0r-mPDztsgSIp7_exT10SDGdQfZmFpen6c';
 const kDemoKey = 'vless://3a7c9f1e-0b2d-4e6f-9a1c-7b3e2f8d4c5a@vpn.bitaps.app:443?security=reality&type=tcp&sni=www.microsoft.com&fp=chrome&pbk=DEMObitapsPLACEHOLDERkey00000000000000000000000&sid=88#bitaps%20VPN';
 const kAppLogin = '${kFnBase}app-login';
 const kAppSub = '${kFnBase}app-sub';

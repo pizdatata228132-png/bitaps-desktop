@@ -98,6 +98,8 @@ const Map<String, String> _kEn = {
   'Сначала войди': 'Sign in first',
   'Меняю код…': 'Changing code…',
   'Сессия истекла — войди снова': 'Session expired — sign in again',
+  'Сессия завершена': 'Session ended',
+  'войди снова': 'sign in again',
   'Код входа обновлён ✓': 'Login code updated ✓',
   'Не удалось сменить код': "Couldn't change the code",
   'Вставь VPN-ключ или Код входа': 'Paste your VPN key or login code',

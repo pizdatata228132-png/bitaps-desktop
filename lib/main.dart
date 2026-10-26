@@ -979,6 +979,16 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
         setState(() { tgId = ttg; appToken = ttok; tab = 2; });
       }
     }
+    // Диагностика авто-разлогинов: если прошлая сессия завершилась неявно (401 от сервера и т.п.),
+    // показываем причину один раз на экране входа. Без этого «вылетел аккаунт» был немым.
+    final lo = p.getString('lastLogout');
+    if (lo != null) {
+      p.remove('lastLogout');
+      final rsn = lo.contains('|') ? lo.split('|').sublist(1).join('|') : lo;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _toast('${tr('Сессия завершена')}${rsn.isNotEmpty ? ' ($rsn)' : ''} — ${tr('войди снова')}');
+      });
+    }
     if (loggedIn) _refreshSub(silent: true);
     _loadNodes(); // узлы подписки для экрана «Серверы» — до первого подключения
     // Авто-коннект НЕ должен подниматься сквозь блокировку или без логина: если экран заблокирован
@@ -1504,10 +1514,17 @@ class ShellState extends State<Shell> with TickerProviderStateMixin, WidgetsBind
   String _srvErr(int code) =>
       appLang == 'en' ? 'Server unavailable ($code). Try again later.' : 'Сервер недоступен ($code). Попробуй позже.';
 
-  void _doLogout({bool silent = false}) {
+  void _doLogout({bool silent = false, String? reason}) {
     // сброс подключения (гасит поколение/таймеры/статус + возвращает кнопку в покой) — в контроллере,
     // чтобы отложенный коллбэк подключения не «переподключил» после выхода
     _conn.reset();
+    // диагностика авто-разлогинов (26.10, жалобы «вылетает аккаунт»): неявный выход фиксируем
+    // с причиной и показываем её при следующем запуске — иначе такие вылеты неотличимы от
+    // «само сломалось» и не расследуются. fire-and-forget: не блокируем teardown.
+    if (reason != null) {
+      SharedPreferences.getInstance().then(
+          (p) => p.setString('lastLogout', '${DateTime.now().toIso8601String()}|$reason'));
+    }
     setState(() {
       tgId = null;
       appToken = null;
