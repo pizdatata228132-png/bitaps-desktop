@@ -193,7 +193,10 @@ jobs:
 
   linux:
     needs: [test, prep]
-    runs-on: ubuntu-latest
+    # 26.10: ubuntu-latest переехал на образ 25.10 (resolute) с новым clang — нативные плагины
+    # (tray_manager/hotkey_manager/flutter_secure_storage json.hpp) падают на -Werror по
+    # deprecated-варнингам. Пин на 24.04 LTS до апгрейда плагинов.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Build deps
