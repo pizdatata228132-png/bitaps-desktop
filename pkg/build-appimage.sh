@@ -29,8 +29,9 @@ cp assets/icon.png "$APPDIR/bitaps.png"
 # appimagetool закреплён по SHA-256, как и движок xray: «continuous» — подвижная цель, и
 # подменённый упаковщик вшил бы чужой код в раздаваемый AppImage. Ломаемся при смене апстрима —
 # это и есть точка проверки: обновить хэш осознанно, посмотрев, что поменялось у AppImage.
-APPIMAGETOOL_SHA256="95cbe7cce9717fce90c484e34052ee7c7f1d7635b33c12525b4776826a7d29b6"
-wget -q "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" -O appimagetool
+# 06.11: continuous переехал на новую сборку (sha не совпал) → пин на стабильный релиз 1.9.1.
+APPIMAGETOOL_SHA256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
+wget -q "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage" -O appimagetool
 echo "$APPIMAGETOOL_SHA256  appimagetool" | sha256sum -c -
 chmod +x appimagetool
 ARCH=x86_64 ./appimagetool --appimage-extract-and-run "$APPDIR" bitaps-x86_64.AppImage
